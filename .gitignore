@@ -1,0 +1,79 @@
+###############################################
+# ESPHome / PlatformIO / Build artifacts
+###############################################
+
+# ESPHome internal build cache
+firmware/.esphome/
+firmware/.pioenvs/
+firmware/build/
+
+# Python virtual environment
+firmware/.venv/
+
+# Compiled firmware
+*.bin
+*.elf
+*.map
+*.hex
+
+# Generated partitions / build metadata
+firmware/.esphome/build/
+firmware/.esphome/platformio/
+
+###############################################
+# Secrets (NEVER version control these!)
+###############################################
+secrets.yaml
+secrets.yml
+*.key
+*.pem
+
+###############################################
+# VS Code
+###############################################
+.vscode/
+*.code-workspace
+
+###############################################
+# KiCAD hardware project
+###############################################
+
+# Backup & autosave files
+*.bak
+*.tmp
+*.kicad_prl
+*_autosave.kicad_pcb
+*_autosave.kicad_sch
+
+# Exported manufacturing files
+hardware/outputs/
+hardware/bom/
+
+# KiCAD 3D models cache
+*.3dshapes/
+
+# KiCAD generated netlists
+*.net
+
+###############################################
+# Documentation
+###############################################
+
+# Image previews and export caches
+docs/__pycache__/
+docs/.cache/
+docs/*.tmp
+
+###############################################
+# OS noise files
+###############################################
+Thumbs.db
+.DS_Store
+desktop.ini
+
+###############################################
+# Python ancillary
+###############################################
+__pycache__/
+*.pyc
+*.pyo
