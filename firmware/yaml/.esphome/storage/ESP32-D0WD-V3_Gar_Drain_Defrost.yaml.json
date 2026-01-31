@@ -1,0 +1,43 @@
+{
+  "storage_version": 1,
+  "name": "esp-garage-drain-defrost",
+  "friendly_name": "Garage Drain Defrost",
+  "comment": "Heater control for AC outdoor unit drain/chassis",
+  "esphome_version": "2026.1.3",
+  "src_version": 1,
+  "address": "192.168.68.29",
+  "web_port": 80,
+  "esp_platform": "ESP32",
+  "build_path": "D:\\Code\\VSCode_Programs\\ESP32\\GARAGE_DRAIN_DEFROST\\firmware\\.esphome",
+  "firmware_bin_path": "D:\\Code\\VSCode_Programs\\ESP32\\GARAGE_DRAIN_DEFROST\\firmware\\.esphome\\.pioenvs\\esp-garage-drain-defrost\\firmware.bin",
+  "loaded_integrations": [
+    "api",
+    "esp32",
+    "esphome",
+    "gpio",
+    "json",
+    "logger",
+    "md5",
+    "mdns",
+    "network",
+    "ota",
+    "output",
+    "preferences",
+    "safe_mode",
+    "sha256",
+    "socket",
+    "switch",
+    "web_server",
+    "web_server_base",
+    "web_server_idf",
+    "wifi"
+  ],
+  "loaded_platforms": [
+    "ota/esphome",
+    "output/gpio",
+    "switch/output"
+  ],
+  "no_mdns": false,
+  "framework": "esp-idf",
+  "core_platform": "esp32"
+}
