@@ -90,4 +90,105 @@ bez ztráty kvality, ušetří se jeden krok ruční relace promptů a jeden kon
 
 ---
 
-*Poslední ADR: ADR-002. Příští číslo: ADR-003.*
+### ADR-003 — Sync-first rituál + revision header = SESSION_LOG
+
+**Status:** Accepted
+**Datum:** 2026-07-10
+**Session:** S2 (Architekt)
+**Kontext:**
+
+Doc-sync disciplína zděděna z Windows (ADR-019), ale bez vlastní ADR kotvy a bez
+definovaného anchoru. Review kick-off narazil na nemožnost ověřit čerstvost před
+Sync Now. Windows navíc ukázal, že ROADMAP-patička driftuje (S36: ROADMAP S25 vs.
+reálné S33) → nespolehlivý anchor.
+
+**Rozhodnutí:**
+
+1. Každý start session = Sync Now + ověření revision headeru PŘED čtením obsahu.
+2. Revision header = poslední `## SN` blok v `SESSION_LOG.md` (jediný anchor).
+   ROADMAP se pro freshness nepoužívá.
+
+**Důsledky:**
+
+- Freshness z jednoho vysokofrekvenčního zdroje; odpadá false-stale šum.
+
+**Odkazy:** ADR-019 (Windows), WORKING_AGREEMENT §5.
+
+---
+
+### ADR-004 — Port led_sequencer + DD pattern sada
+
+**Status:** Accepted
+**Datum:** 2026-07-10
+**Session:** S2 (Architekt)
+**Kontext:**
+
+ERR signalizace dnes ruční YAML script se spárovanými globals; WD LED nesignalizuje
+provozní stav topení. Windows má univerzální `led_sequencer` (ADR-010) psaný pro
+reuse — dvě instance, deklarativní patterny, `set_pattern(id, bool)`.
+
+**Rozhodnutí:**
+
+Portovat `led_sequencer` beze změny enginu.
+
+ERR LED (GPIO2), sériově (F3, gaps 1500/2000):
+
+| Kód | Chyba | Pattern |
+|---|---|---|
+| `err_wifi` | WiFi lost | 1×(300/300) |
+| `err_t1` | T1 outside fail | 2×(300/300) |
+| `err_t2` | T2 evaporator fail | 3×(300/300) |
+| `err_t3` | T3 chassis fail | 4×(300/300) |
+| `err_t4` | T4 drain fail | 5×(300/300) |
+
+WD LED (GPIO4), mutually-exclusive stavy, všechny continuous, engine drží jeden
+aktivní (priorita shora):
+
+| Stav | Podmínka | Pattern |
+|---|---|---|
+| `wd_disabled` | MAIN_SWITCH off | 100/900 continuous |
+| `wd_defrost` | heater ON / defrost_running | 100/100 continuous |
+| `wd_armed` | HEAT_MODE on, žádný heater | 2×(150/150)+900 off continuous |
+| `wd_idle` | enabled, HEAT_MODE off | 500/500 continuous |
+
+Výběrová lambda: `!main → disabled; else heater_on → defrost; else heat_mode → armed; else idle`.
+
+Detekční vrstva se MUSÍ rozdělit ze spárovaných globals (`err_t1_t2_fail` /
+`err_t3_t4_fail`) na per-senzor `err_t1..t4` — patří do implementační session.
+
+**Zdůvodnění:**
+
+Vědomá volba: ERR číslování dle README pořadí (ne frequency-based jako Windows ADR-006).
+
+**Odkazy:** Windows ADR-010, ARCHITECTURE §8.3/§10.
+
+---
+
+### ADR-005 — HA-boundary + entity-expozice konvence
+
+**Status:** Accepted
+**Datum:** 2026-07-10
+**Session:** S2 (Architekt)
+**Kontext:**
+
+HA je tenká vrstva bez transformace; DD dnes exponuje entity vývojářsky (EN +
+kódové názvy), ploše bez device_id, bez derivovaného stavu.
+
+**Rozhodnutí:**
+
+ESP = veškerá derivace; HA jen zobrazuje.
+
+1. CZ friendly names.
+2. Grouping přes device_id sub-devices.
+3. ESP-side "Stav systému" (Vypnuto/Klid/Naarmováno/Odmrazování — zrcadlí WD
+   výběrovou lambdu) + "Kód chyby" text senzory.
+4. Human-readable formátování (uptime d/h/m) HA-side = jediná posvěcená výjimka
+   (Windows OI28 precedent).
+
+Exekuce (per-entity rename + grouping) = samostatná session.
+
+**Odkazy:** Windows ARCHITECTURE §10, ADR-017.
+
+---
+
+*Poslední ADR: ADR-005. Příští číslo: ADR-006.*

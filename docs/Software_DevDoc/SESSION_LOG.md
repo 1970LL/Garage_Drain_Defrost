@@ -4,6 +4,33 @@
 
 ---
 
+## S2 — 2026-07-10 (Architekt) — improvement review vs Garage_Windows
+
+Rozhodovací session. Bez zásahu do firmwaru.
+
+**Provedeno:**
+- ADR-003 sync-first + revision header = SESSION_LOG.
+- ADR-004 port led_sequencer: ERR 5 separátních kódů (wifi/T1/T2/T3/T4), WD coarse
+  (disabled/defrost/armed/idle, 1 aktivní stav).
+- ADR-005 HA-boundary: ESP derivuje vše, CZ názvy, device_id grouping, "Stav systému"
+  + "Kód chyby" text senzory; rename = samostatná session.
+- Review nálezy → BACKLOG: OI5 (uptime), OI6 (heat_mode/defrost decoupling).
+- Doc fix: GPIO4 není strapping pin (jen GPIO2) — README + ARCHITECTURE §2.2.
+
+**Fronta:** (1) tento doc-commit; (2) implementační session (led_sequencer port, ERR
+split, WD lambda, uptime); (3) entity rename session (ADR-005).
+
+**Výstupy:**
+- `DECISIONS.md` (+ADR-003, +ADR-004, +ADR-005), `BACKLOG.md` (+OI5, +OI6),
+  `README.md` (strapping pin fix, error-code tabulka na 5 kódů),
+  `HANDOVER_20260710.md` (nový)
+
+**Blokující:** žádné
+**Další session:** Implementační session (led_sequencer port, ERR split na
+err_t1..t4, WD výběrová lambda, uptime senzor) — viz HANDOVER_20260710.md.
+
+---
+
 ## S1 — 2026-07-10
 
 **Role:** Architekt (kick-off)

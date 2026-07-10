@@ -71,8 +71,8 @@ Logic: **ESP32 HIGH → LED ON**
 - **WD – GPIO4** (Watchdog 1 Hz blink, pulse duration depends on **MAIN_SWITCH** state)  
 - **ERR – GPIO2** (Error codes; 5 s cycle with 100 ms)
 
-⚠ **GPIO2 and GPIO4 are ESP32 strapping pins.**  
-LEDs must not force incorrect boot levels → design uses MOSFET (safe).
+⚠ **GPIO2 is an ESP32 strapping pin** (GPIO4 is not).  
+LED must not force an incorrect boot level → design uses MOSFET (safe).
 
 ---
 
@@ -116,10 +116,10 @@ All timing constants will be **HA-adjustable** (`number:` entities) and persist 
 
 Error codes:
 - **1×** Wi‑Fi connection lost  
-- **2×** T1 or T2 failure  
-- **3×** T3 or T4 failure  
-- **4×** Reserved  
-- **5×** Reserved  
+- **2×** T1 (Outside) sensor failure  
+- **3×** T2 (Evaporator) sensor failure  
+- **4×** T3 (Chassis) sensor failure  
+- **5×** T4 (Drain) sensor failure  
 
 Multiple active errors are shown sequentially.
 
