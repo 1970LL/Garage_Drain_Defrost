@@ -25,8 +25,22 @@ Single shared 1‑Wire bus on **GPIO21**, four sensors:
 - **T2 – Toshiba Evaporator**
 - **T3 – Toshiba Chassis**
 - **T4 – Drain Pipe**
-
 Sensor addresses are assigned during commissioning.
+
+### Simulation mode - Sensors substitute for testing and debugging
+Simulation mode allows providing temperature values from web server. 
+- **Simulation mode ON/OFF** default OFF 
+- **Sim Outside**
+- **Sim Evaporator**
+- **Sim Chassiss** option
+- **Sim Drain** option
+
+### Dynamic DS18B20 Polling Strategy
+To detect defrost cycles reliably while keeping bus traffic low, we use on‑demand refresh:
+- All DS18B20 sensors have a base `update_interval` of 60 s.
+- When `HEAT_MODE` is **inactive**, no extra polling is performed (low bus load).
+- When `HEAT_MODE` is **active**, the **evaporator** sensor (T2) is actively refreshed every **5 s** via `component.update`.
+- When either heater output (DO1/DO2) is **ON**, the **chassis** (T3) and **drain** (T4) sensors are refreshed every **20 s** via `component.update`.
 
 ### Digital Inputs
 - **DI1 – GPIO36** (input only, reserved)
@@ -54,8 +68,8 @@ Logic: **ESP32 HIGH → output ON**
 Driven through BSS138 (open‑drain).  
 Logic: **ESP32 HIGH → LED ON**
 
-- **WD – GPIO4** (Watchdog 1 Hz blink)  
-- **ERR – GPIO2** (Error codes; 5 s cycle with 200 ms pulses)
+- **WD – GPIO4** (Watchdog 1 Hz blink, pulse duration depends on **MAIN_SWITCH** state)  
+- **ERR – GPIO2** (Error codes; 5 s cycle with 100 ms)
 
 ⚠ **GPIO2 and GPIO4 are ESP32 strapping pins.**  
 LEDs must not force incorrect boot levels → design uses MOSFET (safe).
@@ -63,6 +77,10 @@ LEDs must not force incorrect boot levels → design uses MOSFET (safe).
 ---
 
 ## Temperature-Based Logic (Simplified)
+
+### MAIN_SWITCH
+Enables/disables the whole oparation. Allows to stop defrost activity on clima unit
+maintanence or is spring/summer seaso. Main switch can be controlled from Home Assistant. 
 
 ### HEAT_MODE
 Enabled/disabled based on **outside temperature** T1:
@@ -93,7 +111,7 @@ All timing constants will be **HA-adjustable** (`number:` entities) and persist 
 
 ## Error Indication (ERR LED on GPIO2)
 
-- LED ON for 200 ms, OFF for 300 ms (pulse)
+- LED ON for 100 ms, OFF for 100 ms (pulse). Frame for each error 1s.
 - Pulses repeated **every 5 seconds**
 
 Error codes:
@@ -153,7 +171,7 @@ Entities exposed to Home Assistant will include:
 
 ## Notes & Recommendations
 - All thresholds and heater run times will be fully configurable from HA.
-- Sensors must be polled frequently enough to detect defrost cycles.
+- Sensors must be polled frequently enough to detect defrost cycles (dynamic polling strategy)
 - Consider adding optional humidity or fan status input in future revisions.
 - Ensure all mains wiring complies with safety regulations.
 

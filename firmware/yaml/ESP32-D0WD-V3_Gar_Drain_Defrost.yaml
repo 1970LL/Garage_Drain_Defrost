@@ -1,17 +1,33 @@
+# ===================== GARAGE_DRAIN_DEFROST (ESP32-WROOM-32UE) =====================
+# NOTE: This version includes:
+#  1) Dynamic DS18B20 polling (base 60s, on-demand refresh 5s/20s)
+#  2) Simulation mode (override temperatures from UI/HA without recompiling)
+#     -> "(used)" sensors feed the logic (real vs simulated values)
+#  3) ERROR DETECTION SYSTEM with WiFi & sensor failure monitoring
+#     -> 5-minute WiFi filter (ignores brief glitches)
+#     -> Concurrent error exposure to HA
+#     -> Individual binary sensors + human-readable text status
+#     -> Error LED with pulse patterns (1x/2x/3x for each error type)
+# ------------------------------------------------------------------------------------
 esphome:
   name: esp-garage-drain-defrost
   friendly_name: "Garage Drain Defrost"
   comment: !secret device_comment
   build_path: "D:/Code/VSCode_Programs/ESP32/GARAGE_DRAIN_DEFROST/firmware/.esphome"
 
+  # Prevent auto-running the defrost script after each reboot (manual start only)
+  on_boot:
+    priority: -10
+    then:
+    - script.stop: run_defrost
+
 esp32:
   board: esp32dev
   framework:
     type: esp-idf
 
-# Základní logování (při ladění klidně DEBUG)
 logger:
-  level: INFO
+  level: DEBUG
 
 api:
   encryption:
@@ -25,7 +41,7 @@ ota:
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-  power_save_mode: none
+  power_save_mode: none # critical for stable API/logs
   manual_ip:
     static_ip: !secret static_ip
     gateway: !secret gateway
@@ -33,21 +49,824 @@ wifi:
     dns1: !secret dns1
   ap:
     ssid: !secret fallback
-    
-# Web rozhraní pro rychlou diagnostiku
+
+# Web UI for quick checks & simulation controls
 web_server:
   port: 80
   version: 2
 
-# Základní I/O – uprav později dle své DPS (jen placeholdery)
-# Např. řídicí výstup vyhřívání, vstup čidla teploty/termostatu apod.
-output:
-  - platform: gpio
-    id: heater_out
-    pin: GPIO2
+# ------------------------ 1‑Wire BUS (shared) ------------------------
+one_wire:
+- platform: gpio
+  pin: GPIO21 # shared DS18B20 bus
 
+# ======================== GLOBALS ========================
+globals:
+# Error flags: individual booleans for each error type
+# WiFi connection lost (filtered: 5 min of sustained disconnection)
+- id: err_wifi_lost
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+# T1 (outside) or T2 (evaporator) sensor failure (NaN detected)
+- id: err_t1_t2_fail
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+# T3 (chassis) or T4 (drain) sensor failure (NaN detected)
+- id: err_t3_t4_fail
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+# WiFi error debounce counter (seconds since disconnect)
+# Seconds elapsed since WiFi was lost (used for 5-min filter: 300 sec)
+- id: wifi_lost_duration_sec
+  type: uint32_t
+  restore_value: false
+  initial_value: '0'
+
+# Defrost state flag
+# True when defrost cycle is actively running
+- id: defrost_running
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+# Simulation Mode persistent flag
+# Enable/disable simulation mode (true=simulated temps, false=real sensors)
+- id: sim_mode_state
+  type: bool
+  restore_value: true
+  initial_value: 'false'
+
+# Main system switch
+# Enable/disable entire system (maintenance/summer mode)
+- id: main_system_enabled
+  type: bool
+  restore_value: true
+  initial_value: 'true'
+
+# ======================== SENSORS ========================
+sensor:
+# Outside Temperature (T1)
+- platform: dallas_temp
+  address: 0x1 # TODO: replace with real address
+  name: "Outside Temperature"
+  id: t_outside
+  update_interval: 120s
+  accuracy_decimals: 1
+  filters:
+    median:
+      window_size: 5
+      send_every: 5
+    #  send_first_at: 3
+
+    # Toshiba Evaporator (T2)
+- platform: dallas_temp
+  address: 0x2 # TODO: replace with real address
+  name: "Evaporator Temperature"
+  id: t_evap
+  update_interval: 120s
+  accuracy_decimals: 1
+  filters:
+    median:
+      window_size: 5
+      send_every: 5
+    #  send_first_at: 3
+
+    # Toshiba Chassis (T3)
+- platform: dallas_temp
+  address: 0x3 # TODO: replace with real address
+  name: "Chassis Temperature"
+  id: t_chassis
+  update_interval: 120s
+  accuracy_decimals: 1
+  filters:
+    median:
+      window_size: 5
+      send_every: 5
+    #  send_first_at: 3
+
+    # Drain Pipe (T4)
+- platform: dallas_temp
+  address: 0x4 # TODO: replace with real address
+  name: "Drain Pipe Temperature"
+  id: t_drain
+  update_interval: 120s
+  accuracy_decimals: 1
+  filters:
+    median:
+      window_size: 5
+      send_every: 5
+    #  send_first_at: 3
+
+# VL53L0X Distance Sensor (Address: 0x41, Enable: GPIO27) - delete later on, only for testing
+# *******************************************************************************************
+- platform: vl53l0x
+  name: "Distance Sensor"
+  id: distance_sensor
+  i2c_id: bus_a
+  address: 0x41
+  enable_pin: GPIO27
+  update_interval: 0.2s
+  unit_of_measurement: "m"
+  accuracy_decimals: 3
+  filters:
+    - sliding_window_moving_average:
+        window_size: 5
+        send_every: 5
+
+  # BME280 Sensor (Address: 0x76, SDO=GND)  - delete later on, only for testing
+- platform: bme280_i2c
+  address: 0x76
+  i2c_id: bus_a
+  update_interval: 5s
+  temperature:
+    name: "BME280 Temperature"
+    id: bme_temp
+#    oversampling: 2x
+  pressure:
+    name: "BME280 Barometric Pressure"
+    id: bme_pressure
+#    oversampling: 2x
+  humidity:
+    name: "BME280 Relative Humidity"
+    id: bme_humidity
+#    oversampling: 2x
+# *******************************************************************************************    
+
+    # "USED" sensors: logic consumes these; they switch between real & simulated
+    # values depending on Simulation Mode (switch sim_mode).
+- platform: template
+  name: "Outside Temperature (used)"
+  id: t_outside_used
+  unit_of_measurement: "°C"
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    if (id(sim_mode).state) {
+      return id(sim_t_outside).state;
+    } else {
+      return id(t_outside).state;
+    }
+
+- platform: template
+  name: "Evaporator Temperature (used)"
+  id: t_evap_used
+  unit_of_measurement: "°C"
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    if (id(sim_mode).state) {
+      return id(sim_t_evap).state;
+    } else {
+      return id(t_evap).state;
+    }
+
+- platform: template
+  name: "Chassis Temperature (used)"
+  id: t_chassis_used
+  unit_of_measurement: "°C"
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    if (id(sim_mode).state) {
+      return id(sim_t_chassis).state;
+    } else {
+      return id(t_chassis).state;
+    }
+
+- platform: template
+  name: "Drain Pipe Temperature (used)"
+  id: t_drain_used
+  unit_of_measurement: "°C"
+  accuracy_decimals: 1
+  update_interval: 5s
+  lambda: |-
+    if (id(sim_mode).state) {
+      return id(sim_t_drain).state;
+    } else {
+      return id(t_drain).state;
+    }
+
+# ======================== TEXT SENSORS ========================
+# Human-readable error status for HA dashboard
+# Shows ALL concurrent errors as comma-separated list
+# Update interval: 60s (reduced traffic to HA)
+text_sensor:
+- platform: template
+  name: "Error Status"
+  id: sensor_error_status
+  update_interval: 60s
+  lambda: |-
+    // Build comma-separated list of ALL active errors
+    std::string status = "OK";
+    std::vector<std::string> active_errors;
+
+    if (id(err_wifi_lost)) {
+      active_errors.push_back("WiFi Lost");
+    }
+    if (id(err_t1_t2_fail)) {
+      active_errors.push_back("T1/T2 Fail");
+    }
+    if (id(err_t3_t4_fail)) {
+      active_errors.push_back("T3/T4 Fail");
+    }
+
+    if (!active_errors.empty()) {
+      status = "";
+      for (size_t i = 0; i < active_errors.size(); i++) {
+        status += active_errors[i];
+        if (i < active_errors.size() - 1) {
+          status += ", ";  // comma-separated list
+        }
+      }
+    }
+    return status;
+
+# ======================== BINARY SENSORS ========================
+binary_sensor:
+# DI1 (GPIO36) — Reserved
+- platform: gpio
+  id: di1_in
+  name: "DI1 (Reserved)"
+  pin:
+    number: GPIO36
+  filters:
+  - delayed_on: 30ms
+  - delayed_off: 30ms
+  internal: true
+  on_press:
+  - logger.log: "DI1: PRESSED"
+  on_release:
+  - logger.log: "DI1: RELEASED"
+
+# DI2 (GPIO39) — Reserved
+- platform: gpio
+  id: di2_in
+  name: "DI2 (Reserved)"
+  pin:
+    number: GPIO39
+  filters:
+  - delayed_on: 30ms
+  - delayed_off: 30ms
+  internal: true
+  on_press:
+  - logger.log: "DI2: PRESSED"
+  on_release:
+  - logger.log: "DI2: RELEASED"
+
+# HEAT_MODE (uses OUTSIDE (used) & thresholds)
+# Enabled when outside temp ≤ heat_on_th
+# Disabled when outside temp ≥ heat_off_th
+# Hysteresis: dual thresholds prevent oscillation
+- platform: template
+  name: "HEAT_MODE"
+  id: bs_heat_mode
+  device_class: cold
+  lambda: |-
+    // If main system is disabled, HEAT_MODE is always OFF
+    if (!id(main_system_enabled)) {
+      return false;
+    }
+
+    if (!isnan(id(t_outside_used).state) &&
+        !isnan(id(heat_on_th).state) &&
+        !isnan(id(heat_off_th).state)) {
+      static bool heat = false;
+      const float t = id(t_outside_used).state;
+      if (t <= id(heat_on_th).state) heat = true;
+      if (t >= id(heat_off_th).state) heat = false;
+      return heat;
+    }
+    return {};
+
+# DEFROST_ORDERED (uses EVAP (used), OUTSIDE (used) & thresholds)
+# Triggered when:
+#   1) T2 (evaporator) ≥ def_abs_th AND
+#   2) ΔT = (T2 - T1) ≥ def_dt_th
+# Both conditions required (AND logic)
+- platform: template
+  name: "DEFROST_ORDERED"
+  id: bs_defrost
+  lambda: |-
+    // If main system is disabled, defrost request is always OFF
+    if (!id(main_system_enabled)) {
+      return false;
+    }
+
+    if (!isnan(id(t_evap_used).state) &&
+        !isnan(id(t_outside_used).state) &&
+        !isnan(id(def_abs_th).state) &&
+        !isnan(id(def_dt_th).state)) {
+      const float te = id(t_evap_used).state;
+      const float to = id(t_outside_used).state;
+      const bool abs_ok = te >= id(def_abs_th).state;
+      const bool dt_ok  = (te - to) >= id(def_dt_th).state;
+      return (abs_ok && dt_ok);
+    }
+    return {};
+
+# Individual error binary sensors for HA exposure
+# These allow concurrent error detection (all shown independently)
+- platform: template
+  name: "Error: WiFi Lost"
+  id: bs_err_wifi_lost
+  device_class: problem
+  lambda: 'return id(err_wifi_lost);'
+
+- platform: template
+  name: "Error: T1 or T2 Sensor Fail"
+  id: bs_err_t1_t2
+  device_class: problem
+  lambda: 'return id(err_t1_t2_fail);'
+
+- platform: template
+  name: "Error: T3 or T4 Sensor Fail"
+  id: bs_err_t3_t4
+  device_class: problem
+  lambda: 'return id(err_t3_t4_fail);'
+
+# Generic error active indicator (any error)
+- platform: template
+  name: "System Error Active"
+  id: bs_any_error
+  device_class: problem
+  lambda: |-
+    return id(err_wifi_lost) || id(err_t1_t2_fail) || id(err_t3_t4_fail);
+
+# ======================== DIGITAL OUTPUTS ========================
+output:
+# DO1: SSR – Chassis heater (GPIO32)
+- platform: gpio
+  id: do1_chassis_out
+  pin:
+    number: GPIO32
+    inverted: false
+
+# DO2: SSR – Drain heater (GPIO33)
+- platform: gpio
+  id: do2_drain_out
+  pin:
+    number: GPIO33
+    inverted: false
+
+# DO3: OC 5/12V (GPIO25) – reserved
+- platform: gpio
+  id: do3_oc_out
+  pin:
+    number: GPIO25
+    inverted: false
+
+# DO4: OC 5/12V (GPIO26) – reserved
+- platform: gpio
+  id: do4_oc_out
+  pin:
+    number: GPIO26
+    inverted: false
+
+# WD LED (GPIO4) – HIGH = LED ON (watchdog heartbeat)
+- platform: gpio
+  id: led_wd
+  pin:
+    number: GPIO4
+    inverted: false
+
+# ERR LED (GPIO2) – HIGH = LED ON (strapping pin safe via BSS138)
+- platform: gpio
+  id: led_err
+  pin:
+    number: GPIO2
+    inverted: false
+
+# Enable/Disable Distance Sensor (GPIO27) - delete later on, only for testing
+# ********************************************************************************************
+#- platform: gpio
+#  id: vl53l0x_enable
+#  pin:
+#    number: GPIO27
+#    inverted: false
+# ********************************************************************************************
+
+# ======================== SWITCHES ========================
 switch:
-  - platform: output
-    name: "Heater Enable"
-    output: heater_out
-    restore_mode: ALWAYS_OFF
+# MAIN SYSTEM SWITCH
+# Enables/disables entire system (maintenance/summer mode)
+- platform: template
+  name: "Main System Enable"
+  id: sw_main_system_enable
+  optimistic: false
+  lambda: |-
+    // Reflect the actual internal state
+    return id(main_system_enabled);
+  turn_on_action:
+  - lambda: |-
+      id(main_system_enabled) = true;
+      // System logic will resume automatically
+  turn_off_action:
+  - lambda: |-
+      // Disable system and force safe state
+      id(main_system_enabled) = false;
+      id(defrost_running) = false;
+  - script.stop: run_defrost
+  - script.stop: defrost_chassis_cycle
+  - script.stop: defrost_drain_cycle
+  # Force both heaters OFF immediately
+  - switch.turn_off: sw_heater_chassis
+  - switch.turn_off: sw_heater_drain
+
+# HEATING OUTPUTS (SSR mapped switches)
+- platform: output
+  name: "Heater Chassis"
+  id: sw_heater_chassis
+  output: do1_chassis_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "Heater Drain"
+  id: sw_heater_drain
+  output: do2_drain_out
+  restore_mode: ALWAYS_OFF
+
+# Aux outputs (hidden from HA)
+- platform: output
+  name: "Aux DO3"
+  id: sw_do3
+  output: do3_oc_out
+  restore_mode: ALWAYS_OFF
+  internal: true
+
+- platform: output
+  name: "Aux DO4"
+  id: sw_do4
+  output: do4_oc_out
+  restore_mode: ALWAYS_OFF
+  internal: true
+
+# SIMULATION CONTROLS
+- platform: template
+  name: "Simulation Mode"
+  id: sim_mode
+  optimistic: false
+  lambda: |-
+    return id(sim_mode_state);
+  turn_on_action:
+  - lambda: |-
+      id(sim_mode_state) = true;
+  turn_off_action:
+  - lambda: |-
+      id(sim_mode_state) = false;
+
+# ======================== SCRIPTS ========================
+script:
+# Error LED controller with pulse patterns
+# Shows each active error with distinct pulse count:
+#   WiFi Lost        → 1 pulse (200ms ON, 1s OFF)
+#   T1/T2 Fail       → 2 pulses (200ms ON, 200ms OFF, repeated 2x + 1s OFF)
+#   T3/T4 Fail       → 3 pulses (200ms ON, 200ms OFF, repeated 3x + 1s OFF)
+# Multiple errors shown sequentially in 10-second cycle started by interval
+- id: show_error_code
+  mode: restart
+  then:
+  - logger.log:
+      format: "show_error_code triggered: WiFi=%d, T1/T2=%d, T3/T4=%d"
+      args: [ id(err_wifi_lost), id(err_t1_t2_fail), id(err_t3_t4_fail) ]
+
+  # Show WiFi error (1 pulse)
+  - if:
+      condition:
+        lambda: 'return id(err_wifi_lost);'
+      then:
+      - output.turn_on: led_err
+      - delay: 200ms
+      - output.turn_off: led_err
+      - delay: 1s
+
+  # Show T1/T2 error (2 pulses)
+  - if:
+      condition:
+        lambda: 'return id(err_t1_t2_fail);'
+      then:
+      - repeat:
+          count: 2
+          then:
+          - output.turn_on: led_err
+          - delay: 200ms
+          - output.turn_off: led_err
+          - delay: 200ms
+      - delay: 0.8s # gap after T1/T2 pattern
+
+  # Show T3/T4 error (3 pulses)
+  - if:
+      condition:
+        lambda: 'return id(err_t3_t4_fail);'
+      then:
+      - repeat:
+          count: 3
+          then:
+          - output.turn_on: led_err
+          - delay: 200ms
+          - output.turn_off: led_err
+          - delay: 200ms
+      - delay: 0.8s # gap after T3/T4 pattern
+  # Placeholder for next errors (if added in future)    
+
+  # Defrost sequence – uses HA-configurable times (minutes)
+  # Main script – starts nested scripts and waits for their completion
+- id: run_defrost
+  mode: restart
+  then:
+  - lambda: 'id(defrost_running) = true;'
+  - script.execute: defrost_chassis_cycle
+  - script.execute: defrost_drain_cycle
+  - wait_until:
+      condition:
+        lambda: 'return !id(defrost_chassis_cycle).is_running() && !id(defrost_drain_cycle).is_running();'
+  - lambda: 'id(defrost_running) = false;'
+
+# Nested script: chassis heater
+# Runs for chassis_time_min (HA-adjustable, default 2 min)
+- id: defrost_chassis_cycle
+  mode: restart
+  then:
+  - switch.turn_on: sw_heater_chassis
+  - delay: !lambda 'return (uint32_t)(id(chassis_time_min).state * 60000);'
+  - switch.turn_off: sw_heater_chassis
+
+# Nested script: drain heater
+# Runs for drain_time_min (HA-adjustable, default 3 min)
+- id: defrost_drain_cycle
+  mode: restart
+  then:
+  - switch.turn_on: sw_heater_drain
+  - delay: !lambda 'return (uint32_t)(id(drain_time_min).state * 60000);'
+  - switch.turn_off: sw_heater_drain
+
+# ======================== INTERVALS ========================
+interval:
+# WiFi connection monitoring with 5-minute filter
+# Detects sustained WiFi loss (ignores brief glitches < 5 min)
+# Connected: reset error flag and debounce counter
+# Disconnected: increment counter, error flag only after 300 seconds
+- interval: 1s
+  then:
+  - if:
+      condition:
+        wifi.connected:
+      then:
+      # WiFi IS connected: reset error and counter
+      - lambda: |-
+          if (id(err_wifi_lost)) {
+            ESP_LOGI("error_detection", "WiFi connection restored");
+          }
+          id(err_wifi_lost) = false;
+          id(wifi_lost_duration_sec) = 0;
+      else:
+      # WiFi IS DISCONNECTED: increment debounce counter
+      - lambda: |-
+          id(wifi_lost_duration_sec)++;
+
+          // Only set error flag AFTER 5 minutes (300 seconds) of disconnection
+          if (id(wifi_lost_duration_sec) >= 300) {
+            if (!id(err_wifi_lost)) {
+              id(err_wifi_lost) = true;
+              ESP_LOGW("error_detection", "WiFi lost for 5+ minutes!");
+            }
+          } else {
+            // Still waiting for 5-minute threshold
+            if (id(wifi_lost_duration_sec) % 60 == 0) {
+              // Log every 60 seconds during disconnection period
+              ESP_LOGD("error_detection", "WiFi disconnected for %lu sec (threshold: 300 sec)", id(wifi_lost_duration_sec));
+            }
+          }
+
+# T1 & T2 sensor validity check (update every 20 seconds)
+# Detects NaN or missing sensor responses
+# Should be fast enough for defrost logic
+- interval: 20s
+  then:
+  - lambda: |-
+      bool t1_valid = !isnan(id(t_outside).state);
+      bool t2_valid = !isnan(id(t_evap).state);
+      bool should_error = !t1_valid || !t2_valid;
+
+      if (should_error != id(err_t1_t2_fail)) {
+        id(err_t1_t2_fail) = should_error;
+        if (should_error) {
+          ESP_LOGW("error_detection", "T1/T2 sensor failure detected! T1_valid=%d, T2_valid=%d", t1_valid, t2_valid);
+        } else {
+          ESP_LOGI("error_detection", "T1/T2 sensors recovered");
+        }
+      }
+
+# T3 & T4 sensor validity check (update every 60 seconds)
+# Detects NaN or missing sensor responses
+# Not Critical for safety, informational only
+- interval: 60s
+  then:
+  - lambda: |-
+      bool t3_valid = !isnan(id(t_chassis).state);
+      bool t4_valid = !isnan(id(t_drain).state);
+      bool should_error = !t3_valid || !t4_valid;
+
+      if (should_error != id(err_t3_t4_fail)) {
+        id(err_t3_t4_fail) = should_error;
+        if (should_error) {
+          ESP_LOGW("error_detection", "T3/T4 sensor failure detected! T3_valid=%d, T4_valid=%d", t3_valid, t4_valid);
+        } else {
+          ESP_LOGI("error_detection", "T3/T4 sensors recovered");
+        }
+      }
+
+# Edge trigger: start defrost on rising DEFROST_ORDERED (when not running)
+# Detects transition from false→true and launches defrost cycle
+- interval: 1s
+  then:
+  - if:
+      condition:
+        lambda: |-
+          static bool last = false;
+          const bool now = id(bs_defrost).state;
+          const bool rising = (!last && now);
+          last = now;
+
+          // Only start if system is enabled and no defrost is already running
+          return id(main_system_enabled) && rising && !id(defrost_running);
+      then:
+      - script.execute: run_defrost
+
+# Error LED controller - trigger error display with pulse patterns
+# Runs every 10 seconds to show current error state
+- interval: 10s
+  then:
+  - script.execute: show_error_code
+
+# Watchdog LED (1 Hz heartbeat)
+# Main switch ON: 500ms ON / 500ms OFF
+# Main switch OFF: 100ms ON / 900ms OFF
+- interval: 1s
+  then:
+  - output.turn_on: led_wd
+  - if:
+      condition:
+        lambda: 'return id(main_system_enabled);'
+      then:
+      - delay: 500ms
+      else:
+      - delay: 100ms
+  - output.turn_off: led_wd
+
+# Dynamic DS18B20 polling: on-demand refresh
+# HEAT_MODE active → refresh Evaporator (T2) every 5 s (5 times interval because of median filter)
+# Allows fast defrost detection when system armed
+- interval: 1s
+  then:
+  - if:
+      condition:
+        binary_sensor.is_on: bs_heat_mode
+      then:
+      - component.update: t_evap
+
+# Any heater ON → refresh Chassis (T3) & Drain (T4) every 20 s (5 times interval because of median filter)
+# Monitors heating performance and ensures temperature feedback
+- interval: 4s
+  then:
+  - if:
+      condition:
+        or:
+        - switch.is_on: sw_heater_chassis
+        - switch.is_on: sw_heater_drain
+      then:
+      - component.update: t_chassis
+      - component.update: t_drain
+
+# ======================== USER SETTINGS (HA-editable) ========================
+# All thresholds and timers are adjustable from Home Assistant
+# Values persist across reboots via restore_value: true
+number:
+# HEAT_MODE thresholds
+# Enable when outside temp ≤ this value
+- platform: template
+  name: "Heat Enable Threshold (°C)"
+  id: heat_on_th
+  min_value: -20
+  max_value: 10
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 2.0
+
+# Disable when outside temp ≥ this value
+- platform: template
+  name: "Heat Disable Threshold (°C)"
+  id: heat_off_th
+  min_value: -10
+  max_value: 15
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 4.0
+
+# DEFROST detection thresholds
+# Absolute threshold: evaporator temp must be ≥ this value
+- platform: template
+  name: "Defrost Evap Abs Threshold (°C)"
+  id: def_abs_th
+  min_value: -10
+  max_value: 30
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 5.0
+
+# Delta threshold: (evaporator - outside) must be ≥ this value
+- platform: template
+  name: "Defrost Delta Threshold (°C)"
+  id: def_dt_th
+  min_value: 0
+  max_value: 20
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 7.0
+
+# Heater run times (minutes)
+# Chassis heater activation duration
+- platform: template
+  name: "Chassis Heater Time (min)"
+  id: chassis_time_min
+  min_value: 1
+  max_value: 60
+  step: 1
+  optimistic: true
+  restore_value: true
+  initial_value: 2
+
+# Drain heater activation duration
+- platform: template
+  name: "Drain Heater Time (min)"
+  id: drain_time_min
+  min_value: 1
+  max_value: 60
+  step: 1
+  optimistic: true
+  restore_value: true
+  initial_value: 3
+
+# SIMULATION CONTROLS (for testing without hardware)
+# Manual outside temperature (used when sim_mode is ON)
+- platform: template
+  name: "Sim Outside (°C)"
+  id: sim_t_outside
+  min_value: -5
+  max_value: 15
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 10
+
+# Manual evaporator temperature (used when sim_mode is ON)
+- platform: template
+  name: "Sim Evaporator (°C)"
+  id: sim_t_evap
+  min_value: -5
+  max_value: 25
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 5
+
+# Manual chassis temperature (used when sim_mode is ON)
+- platform: template
+  name: "Sim Chassis (°C)"
+  id: sim_t_chassis
+  min_value: -5
+  max_value: 15
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 5
+
+# Manual drain temperature (used when sim_mode is ON)
+- platform: template
+  name: "Sim Drain (°C)"
+  id: sim_t_drain
+  min_value: -5
+  max_value: 15
+  step: 0.5
+  optimistic: true
+  restore_value: true
+  initial_value: 5
+
+# ===================== TESTING BLOCK - DELETE LATER =====================
+# I2C Bus Configuration (GPIO22=SDA, GPIO23=SCL, 100kHz)
+i2c:
+  - id: bus_a
+    sda: GPIO22
+    scl: GPIO23
+    frequency: 20kHz
+    scan: true
+# ===================== END OF TESTING BLOCK =====================
