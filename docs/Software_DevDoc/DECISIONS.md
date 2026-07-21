@@ -191,4 +191,95 @@ Exekuce (per-entity rename + grouping) = samostatná session.
 
 ---
 
-*Poslední ADR: ADR-005. Příští číslo: ADR-006.*
+### ADR-006 — Boot-resume defrostu přes edge-trigger (varianta B)
+
+**Status:** Accepted
+**Datum:** 2026-07-21
+**Session:** S4 (Architekt)
+**Nález:** F1 / OI8 (Code_review_20260710.md)
+
+**Kontext:**
+
+YAML komentář slibuje "manual start only", reálné chování je ale auto-resume defrostu
+po rebootu: edge-trigger `DEFROST_ORDERED` má `static bool last`, který se při bootu
+inicializuje na `false` → první `DEFROST_ORDERED == true` po bootu je vzestupná hrana
+→ `run_defrost` fírne. `on_boot` `script.stop` tomu budoucímu spuštění nebrání (ověřeno,
+Windows TC-6.1). F3 (DS18B20 ~10 min NaN po bootu) tomu accidentally brání a posouvá
+resume o ~10 min. Zvažovány dvě cesty: A (explicitní `on_boot` resume, plný strop bez
+podmínky) vs B (resume ponechán na edge-triggeru + condition-gated cyklus dle ADR-007).
+
+**Rozhodnutí:**
+
+Varianta B. Auto-resume po rebootu je **záměrné** a realizuje ho výhradně existující
+edge-trigger `DEFROST_ORDERED` (strukturální záruka: `static bool last = false` při
+bootu → první přečtené true = rising edge → `run_defrost`).
+
+- `on_boot` explicitní resume se **nepřidává** (pod B by fizznul — `!bs_defrost.state`
+  je při NaN senzorech true → `wait_until` v cyklu skončí okamžitě; byl by to zavádějící
+  dead-code).
+- `restore_value: true` na `defrost_running` se **nepřidává** (pod B nic neřídí).
+- **Závislost:** F3 fix (`send_first_at: 1`, OI12) ohraničuje nejhorší případ zmeškání
+  z ~10 min na ~1 poll interval. Bez něj B funguje, jen s větším oknem.
+- YAML komentář "manual start only" se opraví na pravdivý popis.
+
+**Zdůvodnění:**
+
+Promeškání max jednoho defrost cyklu je akceptovatelné (jednotka krátce bez asistence,
+ne nechtěné topení — heatery `ALWAYS_OFF`). Záruku "další už nepromeškáme" dává
+strukturálně edge-trigger; F3 fix zmenší i to jediné okno. Leanness: žádný redundantní
+boot kód, žádný NVS zápis, dokumentace odpovídá realitě.
+
+**Důsledky:**
+
+- `ARCHITECTURE.md §4.4` — doplněno boot chování.
+- OI8 → 🔧 Implementer (oprava komentáře + závislost OI12).
+- OI12 (F3) povýšeno z "kdykoli" na přednostní závislost boot-resume.
+
+**Odkazy:** Code_review_20260710.md §F1/§F3, ADR-007, ADR-004.
+
+---
+
+### ADR-007 — Defrost cyklus condition-driven s bezpečnostním stropem
+
+**Status:** Accepted
+**Datum:** 2026-07-21
+**Session:** S4 (Architekt)
+**Nález:** F4 / OI9 (Code_review_20260710.md) — **supersedes OI3**
+
+**Kontext:**
+
+`defrost_chassis_cycle`/`defrost_drain_cycle` běží po pevný `delay:`
+(`chassis_time_min`/`drain_time_min`) nezávisle na tom, jak dlouho reálná podmínka
+`DEFROST_ORDERED` trvá. Pokud odmrazovací cyklus jednotky trvá déle, topení zhasne na
+časovači, i když jednotka ještě odmrazuje; edge-triggered → re-trigger až po poklesu a
+novém náběhu podmínky. Přesnější formulace stávajícího OI3.
+
+**Rozhodnutí:**
+
+Nahradit pevný `delay:` za `wait_until` s `condition: !bs_defrost.state` a `timeout:`
+= `chassis_time_min`/`drain_time_min`. Topení běží **dokud `DEFROST_ORDERED` trvá**,
+s min-časem jako **bezpečnostním stropem** (maximální doba topení), ne pevnou dobou.
+
+- Sémantika HA number entit `chassis_time_min`/`drain_time_min` se mění z "pevná doba"
+  na "maximální doba (strop)".
+- **Rename HA labelů** ("...Time (min)" → "...Max Time (min)") se **odkládá** na
+  ADR-005 execution session (entity rename) — nepředbíhat, riziko dvojí změny.
+
+**Zdůvodnění:**
+
+Topení kopíruje skutečné trvání odmrazovacího cyklu → lepší ochrana i úspora; strop je
+fail-safe max on-time proti zaseknuté podmínce.
+
+**Důsledky:**
+
+- `ARCHITECTURE.md §4.4` — přepsán popis defrost cyklů.
+- OI3 → Done (supersedes). OI9 → 🔧 Implementer (realizace).
+- Naming poznámka do ADR-005 fronty.
+- Interakce s ADR-006/B: boot-resumnutý cyklus používá stejný `wait_until`; při NaN
+  senzorech (před F3 fixem) fizzne — pod variantou B akceptováno.
+
+**Odkazy:** Code_review_20260710.md §F4, OI3, ADR-006, ADR-005 (deferred rename).
+
+---
+
+*Poslední ADR: ADR-007. Příští číslo: ADR-008.*

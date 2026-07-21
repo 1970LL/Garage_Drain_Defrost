@@ -156,7 +156,7 @@ Pokud je systém disabled, DEFROST_ORDERED je vždy false.
 ### 4.4 Defrost cyklus (scripty)
 
 Na vzestupnou hranu `DEFROST_ORDERED` (false→true), pokud systém je enabled a defrost
-zrovna neběží, se spustí `run_defrost`:
+zrovna neběží (`defrost_running == false`), se spustí `run_defrost`:
 
 ```
 run_defrost (mode: restart)
@@ -166,12 +166,25 @@ run_defrost (mode: restart)
   ├─ wait_until: obě dokončeny                ┘
   └─ defrost_running = false
 
-defrost_chassis_cycle: heater_chassis ON → delay chassis_time_min (default 2 min) → OFF
-defrost_drain_cycle:   heater_drain ON   → delay drain_time_min (default 3 min)   → OFF
+defrost_chassis_cycle: heater_chassis ON → wait_until(!DEFROST_ORDERED, timeout chassis_time_min) → OFF
+defrost_drain_cycle:   heater_drain ON   → wait_until(!DEFROST_ORDERED, timeout drain_time_min)   → OFF
 ```
 
-Oba nested scripty startují **současně** a běží nezávisle na svých vlastních
-HA-nastavitelných časech — chassis a drain heater tedy nejsou synchronně vypnuté.
+Topení běží, **dokud reálná podmínka `DEFROST_ORDERED` trvá**; `chassis_time_min`
+(default 2 min) a `drain_time_min` (default 3 min) fungují jako **bezpečnostní strop
+(maximální doba topení)**, ne jako pevná doba (ADR-007, supersedes OI3). Oba nested
+scripty startují současně a běží nezávisle na svých stropech — chassis a drain heater
+tedy nejsou synchronně vypnuté.
+
+**Chování po rebootu (ADR-006, varianta B):** auto-resume defrostu je záměrný a
+realizuje ho výhradně edge-trigger `DEFROST_ORDERED` — jeho `static bool last` se při
+bootu inicializuje na `false`, takže první `DEFROST_ORDERED == true` přečtené po bootu
+je vzestupná hrana → `run_defrost` fírne. Žádný explicitní `on_boot` resume ani
+`restore_value` na `defrost_running` se nepoužívá. Nejhorší případ zmeškání (reboot
+uprostřed reálného cyklu jednotky) je ohraničen dobou, než DS18B20 senzory nahlásí
+platná data — s `send_first_at: 1` (F3/OI12) ~1 poll interval místo původních ~10 min.
+Heatery jsou `restore_mode: ALWAYS_OFF`, takže toto okno je bezpečné (jednotka krátce
+bez asistence, ne nechtěné topení).
 
 ### 4.5 Main System Switch
 
@@ -241,3 +254,4 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 |---|---|---|
 | 1.0 | 2026-07-10 | První verze. Snapshot stavu firmwaru z ChatGPT/breadboard éry, zdroj: YAML review před formálním code review. |
 | 1.1 | 2026-07-10 | Oprava §2.2: GPIO4 mylně označen jako strapping pin, opraveno na jen GPIO2. Schváleno Architektem po konzistenční revizi doc seedu (S1). |
+| 1.2 | 2026-07-21 | §4.4 přepsán dle ADR-006 (boot-resume varianta B) a ADR-007 (defrost condition-driven, supersedes OI3). S4 (Architekt), doc-commit S4. |

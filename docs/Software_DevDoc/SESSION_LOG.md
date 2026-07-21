@@ -4,6 +4,29 @@
 
 ---
 
+## S4 — 2026-07-21 (Architekt) — formální ADR pro F1/F4 + doc-commit
+
+**Provedeno:**
+- ADR-006 (OI8/F1) — boot-resume varianta B: resume přes edge-trigger, bez on_boot
+  resume, bez restore_value na defrost_running; F3/OI12 (send_first_at) jako pojmenovaná
+  závislost ohraničující zmeškání na ~1 poll.
+- ADR-007 (OI9/F4, supersedes OI3) — defrost condition-driven: pevný delay →
+  wait_until(!DEFROST_ORDERED, timeout = *_time_min jako strop). Rename labelů odložen
+  na ADR-005 execution session.
+- ARCHITECTURE.md §4.4 přepsán dle ADR-006/007.
+- BACKLOG: OI8/OI9 → ADR Accepted / 🔧 realizace; OI12 povýšeno na závislost OI8.
+
+**Výstupy:**
+- DECISIONS.md (+ADR-006, +ADR-007), ARCHITECTURE.md (§4.4), BACKLOG.md (OI8/OI9/OI12),
+  SESSION_LOG.md (tento blok).
+
+**Blokující:** žádné
+**Další session:** Implementační session — defrost změny (wait_until + timeout, F3
+send_first_at, oprava YAML komentáře "manual start only") + ADR-004 led_sequencer port
+dle BACKLOG. Poté entity rename (ADR-005), kde padne i label rename z ADR-007.
+
+---
+
 ## S3 — 2026-07-10 (Implementer/CC) — Code Review firmware YAML
 
 **Provedeno:**
