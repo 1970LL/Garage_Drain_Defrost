@@ -4,6 +4,36 @@
 
 ---
 
+## S3 — 2026-07-10 (Implementer/CC) — Code Review firmware YAML
+
+**Provedeno:**
+- Kompletní line-by-line review `ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (funkčnost +
+  bezpečnost) → `docs/Software_DevDoc/Code_review_20260710.md` (8 nálezů: F1–F5, S1–S4)
+- Křížové srovnání s `ESP32-D0WD-V3_Gar_Windows_02.yaml` (Lubor dočasně vložil,
+  po review smazáno) — potvrdilo/posílilo více nálezů, odhalilo `led_sequencer`
+  jako custom komponentu (prerekvizita pro ADR-004) a rukopisné konvence k převzetí
+- Společný průchod s Luborem bod po bodu, všechny nálezy rozhodnuty:
+  - F1 (boot auto-restart defrostu) → obnovit stav před rebootem (restore_value +
+    on_boot resume), ne "manual start only"
+  - S1 (otevřený fallback AP) → přidat heslo, konzistentně s Windows
+  - S2 (web_server bez auth) → ponechat pro bench, řešit před Field Deployment
+  - F4 (defrost timer vs. trvání podmínky) → `wait_until` s timeout stropem místo
+    pevného `delay:`; naming HA labelů odloženo na ADR-005 execution session
+  - Zbytek (F2/F3/F5, S3-logger, S4) beze změny v kategorizaci — 🔧 Implementer,
+    žádné ADR nutné
+- `BACKLOG.md` naplněn: OI8–OI14 (nové), OI3 vyřešena → Done, OI4 přeformulována
+
+**Výstupy:**
+- `Code_review_20260710.md` (nový, vč. sekce F — resolutions)
+- `BACKLOG.md` (+OI8–OI14, OI3→Done, OI4 update)
+
+**Blokující:** žádné
+**Další session:** Formální ADR zápis Architektem pro F1 (OI8) a F4 (OI9) — obě mění
+zdokumentované chování v `ARCHITECTURE.md` §4.4, rozhodnutí je ale už hotové (jen
+schválení). Poté implementační session(y) — viz `BACKLOG.md` OI8–OI14.
+
+---
+
 ## S2 — 2026-07-10 (Architekt) — improvement review vs Garage_Windows
 
 Rozhodovací session. Bez zásahu do firmwaru.
