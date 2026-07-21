@@ -227,8 +227,8 @@ Všechny persistují přes `restore_value: true`.
 | `heat_off_th` | 4.0 °C | −10 až 15 | HEAT_MODE vypnutí |
 | `def_abs_th` | 5.0 °C | −10 až 30 | Defrost absolutní práh (evaporátor) |
 | `def_dt_th` | 7.0 °C | 0 až 20 | Defrost delta práh (evap − outside) |
-| `chassis_time_min` | 2 min | 1–60 | Doba běhu chassis heateru |
-| `drain_time_min` | 3 min | 1–60 | Doba běhu drain heateru |
+| `chassis_time_min` | 2 min | 1–60 | Max. doba běhu chassis heateru (bezpečnostní strop, ADR-007) |
+| `drain_time_min` | 3 min | 1–60 | Max. doba běhu drain heateru (bezpečnostní strop, ADR-007) |
 | `sim_t_outside/evap/chassis/drain` | 10/5/5/5 °C | dle senzoru | Manuální hodnoty pro simulační režim |
 
 ---
@@ -240,11 +240,8 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 1. **TODO adresy senzorů** — `t_outside`/`t_evap`/`t_chassis`/`t_drain` mají placeholder
    adresy `0x1`–`0x4`, nutno nahradit reálnými adresami při komisioningu.
 2. **Testovací I2C blok** — VL53L0X + BME280 + I2C bus, explicitně označeno "delete later".
-3. **Paralelní defrost cyklus bez synchronizace konce** — chassis a drain heater běží
-   nezávisle na různě dlouhých časovačích; pokud by měla existovat společná fáze
-   dohasínání/blokace, dnes neexistuje (pravděpodobně záměr, k ověření s Ownerem).
-4. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
-5. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
+3. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
+4. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
 
 ---
 
@@ -255,3 +252,4 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.0 | 2026-07-10 | První verze. Snapshot stavu firmwaru z ChatGPT/breadboard éry, zdroj: YAML review před formálním code review. |
 | 1.1 | 2026-07-10 | Oprava §2.2: GPIO4 mylně označen jako strapping pin, opraveno na jen GPIO2. Schváleno Architektem po konzistenční revizi doc seedu (S1). |
 | 1.2 | 2026-07-21 | §4.4 přepsán dle ADR-006 (boot-resume varianta B) a ADR-007 (defrost condition-driven, supersedes OI3). S4 (Architekt), doc-commit S4. |
+| 1.3 | 2026-07-21 | Konzistenční čištění po ADR-007: §7 bod "paralelní defrost bez sync konce" odstraněn (vyřešeno, viz §4.4), zbylé body přečíslovány; §6 tabulka `chassis_time_min`/`drain_time_min` popis změněn z "doba běhu" na "max. doba (bezpečnostní strop)". |
