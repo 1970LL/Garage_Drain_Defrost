@@ -91,9 +91,9 @@ produkční defrost logiky na I2C senzorech nezávisí.
 
 | ID | Název | Adresa | Účel |
 |---|---|---|---|
-| `t_outside` | Outside Temperature | `0x1` — **TODO: placeholder, nutno nahradit reálnou adresou** | Venkovní teplota |
-| `t_evap` | Evaporator Temperature | `0x2` — **TODO** | Teplota výparníku (Toshiba) |
-| `t_chassis` | Chassis Temperature | `0x3` — **TODO** | Teplota šasi jednotky |
+| `t_outside` | Outside Temperature | `0x3400000051876f28` — komisionováno S5 (2026-07-28) | Venkovní teplota |
+| `t_evap` | Evaporator Temperature | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota výparníku (Toshiba) |
+| `t_chassis` | Chassis Temperature | `0x3` — **TODO: placeholder, nutno nahradit reálnou adresou** | Teplota šasi jednotky |
 | `t_drain` | Drain Pipe Temperature | `0x4` — **TODO** | Teplota odtokové trubky |
 
 Základní `update_interval: 120s`, filtr `median` (window 5, send_every 5).
@@ -166,15 +166,31 @@ run_defrost (mode: restart)
   ├─ wait_until: obě dokončeny                ┘
   └─ defrost_running = false
 
-defrost_chassis_cycle: heater_chassis ON → wait_until(!DEFROST_ORDERED, timeout chassis_time_min) → OFF
-defrost_drain_cycle:   heater_drain ON   → wait_until(!DEFROST_ORDERED, timeout drain_time_min)   → OFF
+defrost_chassis_cycle: heater_chassis ON → delay(chassis_time_floor)
+                       → wait_until(!DEFROST_ORDERED, timeout = chassis_time_ceiling − chassis_time_floor) → OFF
+defrost_drain_cycle:   heater_drain   ON → delay(drain_time_floor)
+                       → wait_until(!DEFROST_ORDERED, timeout = drain_time_ceiling − drain_time_floor)     → OFF
 ```
 
-Topení běží, **dokud reálná podmínka `DEFROST_ORDERED` trvá**; `chassis_time_min`
-(default 2 min) a `drain_time_min` (default 3 min) fungují jako **bezpečnostní strop
-(maximální doba topení)**, ne jako pevná doba (ADR-007, supersedes OI3). Oba nested
-scripty startují současně a běží nezávisle na svých stropech — chassis a drain heater
-tedy nejsou synchronně vypnuté.
+Každý cyklus má dvě meze (ADR-008). `chassis_time_floor` / `drain_time_floor`
+(default 2 / 3 min) je garantovaná minimální doba topení — běží bez ohledu na stav
+podmínky. Chrání proti short-cyklování: `DEFROST_ORDERED` nemá hysterezi, takže krátké
+zakolísání kolem prahu by heater vypnulo dřív, než topný kabel při tepelné setrvačnosti
+šasi/trubky cokoli ohřeje. `chassis_time_ceiling` / `drain_time_ceiling` (default 20 min)
+je bezpečnostní strop proti zaseknuté podmínce (ADR-007). Timeout druhé fáze je
+`ceiling − floor`, takže celkový strop cyklu je `ceiling`.
+
+Mezi floor a stropem je heater řízen reálným trváním podmínky: krátký defrost skončí
+na floor, delší na poklesu `DEFROST_ORDERED`, selhání vyhodnocení na stropu.
+
+**Retrigger:** edge-trigger `DEFROST_ORDERED` není gatovaný na `defrost_running` —
+nová vzestupná hrana restartuje `run_defrost` i oba nested scripty (`mode: restart`).
+`defrost_running` je čistý stavový příznak, ne interlock. Známé omezení: retrigger
+resetuje rozpočet stropu, takže kmitající podmínka může topení protahovat (ADR-008
+bod 8, k pozorování v zimní sezóně).
+
+Oba nested scripty startují současně a běží nezávisle na svých mezích — chassis a drain
+heater tedy nejsou synchronně vypnuté.
 
 **Chování po rebootu (ADR-006, varianta B):** auto-resume defrostu je záměrný a
 realizuje ho výhradně edge-trigger `DEFROST_ORDERED` — jeho `static bool last` se při
@@ -227,8 +243,10 @@ Všechny persistují přes `restore_value: true`.
 | `heat_off_th` | 4.0 °C | −10 až 15 | HEAT_MODE vypnutí |
 | `def_abs_th` | 5.0 °C | −10 až 30 | Defrost absolutní práh (evaporátor) |
 | `def_dt_th` | 7.0 °C | 0 až 20 | Defrost delta práh (evap − outside) |
-| `chassis_time_min` | 2 min | 1–60 | Max. doba běhu chassis heateru (bezpečnostní strop, ADR-007) |
-| `drain_time_min` | 3 min | 1–60 | Max. doba běhu drain heateru (bezpečnostní strop, ADR-007) |
+| `chassis_time_floor` | 2 min | 1–10 | Garantovaná min. doba běhu chassis heateru (ADR-008) |
+| `drain_time_floor` | 3 min | 1–10 | Garantovaná min. doba běhu drain heateru (ADR-008) |
+| `chassis_time_ceiling` | 20 min | 15–60 | Max. doba běhu chassis heateru (bezpečnostní strop, ADR-007/008) |
+| `drain_time_ceiling` | 20 min | 15–60 | Max. doba běhu drain heateru (bezpečnostní strop, ADR-007/008) |
 | `sim_t_outside/evap/chassis/drain` | 10/5/5/5 °C | dle senzoru | Manuální hodnoty pro simulační režim |
 
 ---
@@ -253,3 +271,5 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.1 | 2026-07-10 | Oprava §2.2: GPIO4 mylně označen jako strapping pin, opraveno na jen GPIO2. Schváleno Architektem po konzistenční revizi doc seedu (S1). |
 | 1.2 | 2026-07-21 | §4.4 přepsán dle ADR-006 (boot-resume varianta B) a ADR-007 (defrost condition-driven, supersedes OI3). S4 (Architekt), doc-commit S4. |
 | 1.3 | 2026-07-21 | Konzistenční čištění po ADR-007: §7 bod "paralelní defrost bez sync konce" odstraněn (vyřešeno, viz §4.4), zbylé body přečíslovány; §6 tabulka `chassis_time_min`/`drain_time_min` popis změněn z "doba běhu" na "max. doba (bezpečnostní strop)". |
+| 1.4 | 2026-07-22 | §4.4 a §6 přepsány dle ADR-008 (floor + rename _time_min → _time_ceiling). S5 (Architekt). |
+| 1.5 | 2026-07-28 | §3: reálné adresy T1 (`t_outside`)/T2 (`t_evap`) komisionovány na hotovém HW (test01 bring-up), TODO odstraněno pro obě. T3/T4 zůstávají placeholder. S5 (Implementer). |

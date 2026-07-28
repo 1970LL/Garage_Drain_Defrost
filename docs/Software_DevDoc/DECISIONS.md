@@ -245,6 +245,7 @@ boot kód, žádný NVS zápis, dokumentace odpovídá realitě.
 **Datum:** 2026-07-21
 **Session:** S4 (Architekt)
 **Nález:** F4 / OI9 (Code_review_20260710.md) — **supersedes OI3**
+**Rozšířeno:** ADR-008
 
 **Kontext:**
 
@@ -282,4 +283,99 @@ fail-safe max on-time proti zaseknuté podmínce.
 
 ---
 
-*Poslední ADR: ADR-007. Příští číslo: ADR-008.*
+### ADR-008 — Minimální doba topení (floor) vedle bezpečnostního stropu
+
+**Status:** Accepted
+**Datum:** 2026-07-22
+**Session:** S5 (Architekt)
+**Rozšiřuje:** ADR-007 (nesuperseduje — mění počet mezí, ne princip)
+
+**Kontext:**
+
+ADR-007 udělal defrost cyklus čistě condition-driven: heater běží, dokud trvá
+`DEFROST_ORDERED`, se stropem jako fail-safe. Na rozdíl od HEAT_MODE ale
+`DEFROST_ORDERED` nemá hysterezi — je to prostá AND podmínka (`t_evap_used ≥ def_abs_th`
+a zároveň `(t_evap_used − t_outside_used) ≥ def_dt_th`) bez dvojitého prahu. Krátké
+zakolísání kolem prahu (šum senzoru, přirozené kolísání defrostu jednotky) proto vypne
+heater téměř okamžitě — dřív, než topný kabel při tepelné setrvačnosti šasi/trubky
+stihne cokoli reálně ohřát.
+
+Vlastní defrost cyklus jednotky odhadován na ~1–5 min; dynamika náběhu topných kabelů
+zatím není změřená.
+
+**Rozhodnutí:**
+
+1. **Dva prahy místo jednoho** pro `defrost_chassis_cycle` i `defrost_drain_cycle`:
+   garantovaná minimální doba (floor) + bezpečnostní strop (ceiling, princip beze změny
+   z ADR-007). Dvoufázová struktura:
+   `turn_on → delay(floor) → wait_until(!DEFROST_ORDERED, timeout = ceiling − floor) → turn_off`
+
+2. **Invariant:** timeout druhé fáze = `ceiling − floor`, nikdy `ceiling`. Celkový strop
+   cyklu zůstává `ceiling` — floor je jeho součást, ne přídavek.
+
+3. **Nové entity:** `chassis_time_floor` / `drain_time_floor`, rozsah **1–10 min**,
+   defaulty 2 / 3 min.
+
+4. **Přejmenování stropů:** `chassis_time_min` → `chassis_time_ceiling`,
+   `drain_time_min` → `drain_time_ceiling`. Rozsah **1–60 → 15–60 min**,
+   defaulty **2 / 3 → 20 / 20 min**.
+   *Důvod přejmenování:* `_time_min` je po zavedení floor aktivně zavádějící — označuje
+   maximum a čte se jako „minimum" i jako jednotka „minuty". Pár floor/ceiling odpovídá
+   slovníku dokumentace („podlaha"/„strop"). Jednotka patří do `unit_of_measurement:`
+   a §6 tabulky, ne do ID.
+   *Důvod zvednutí rozsahu:* bez rozestoupení mezí by `wait_until` okno vyšlo nulové
+   a condition-driven chování z ADR-007 by zaniklo.
+
+5. **Nepřekrývající se rozsahy** (floor ≤ 10, ceiling ≥ 15) činí `floor < ceiling`
+   strukturálně nesplnitelným → podtečení `uint32_t` v timeout výpočtu nemůže nastat.
+   Defenzivní clamp v lambdě se přesto ponechá jako levná pojistka pro případ budoucí
+   změny rozsahů.
+
+6. **Retrigger:** gate `defrost_running == false` na edge-triggeru `DEFROST_ORDERED`
+   se **ruší**. Nová vzestupná hrana restartuje cyklus přes `mode: restart`
+   (`switch.turn_on` na již zapnutém heateru je idempotentní). `defrost_running`
+   degraduje z interlocku na čistý stavový příznak — což je zároveň to, co potřebuje
+   ADR-004 pro WD stav „defrost".
+   *Důvod:* chassis a drain mají různé stropy a končí nesoučasně; dokud běžel ten
+   pomalejší, byla nová hrana spolknutá a rychlejší heater se znovu nenastartoval.
+
+7. **Floor není bezpečnostní override.** `script.stop` z hlavního vypínače (§4.5)
+   zabíjí i běžící `delay:` — nouzová cesta zůstává nedotčená.
+
+8. **Akceptované omezení:** retrigger resetuje rozpočet stropu. Podmínka kmitající
+   s periodou kratší než floor tedy může topení protahovat neomezeně. Strop chrání
+   proti *zaseknuté* podmínce, ne proti *kmitající*. Vědomě akceptováno v odlehčeném
+   režimu — chování nelze rozumně odhadnout ani nasimulovat na bench, závisí na šumu
+   DS18B20 v reálné instalaci a na dynamice konkrétní jednotky.
+   **Re-trigger podmínka:** pozorování v zimní sezóně; při výskytu → nezávislý
+   absolutní max on-time neresetovaný retriggerem (precedent Garage_Windows ERR8 /
+   OI25, `max_on_time_ms` v C++ driveru). BACKLOG položka, ne blokující.
+
+9. **Rename HA labelů (friendly names) odložen** na ADR-005 execution session — celá
+   čtveřice (floor + ceiling, chassis + drain) najednou, ne po kouskách. Přejmenování
+   `id:` v bodě 4 je interní a na HA `entity_id` nemá vliv (ten se odvozuje z `name:`).
+
+**Zdůvodnění:**
+
+Minimální doba je analogií dvojitého prahu u HEAT_MODE, jen realizovaná časem místo
+teploty. Bez ní je condition-driven cyklus zranitelný vůči šumu právě proto, že
+`DEFROST_ORDERED` hysterezi nemá. Není to revert ADR-007 — strop zůstává potřebný
+beze změny, přidává se dolní mez vedle horní.
+
+**Důsledky:**
+
+- `ARCHITECTURE.md §4.4` přepsán, `§6` tabulka přepsána (v1.4).
+- Změna `id:` u stropů mění hash NVS preference → uložené hodnoty 2/3 min se neobnoví
+  a entity nastartují na novém defaultu 20 min. Přejmenování je tedy zároveň čistou
+  migrací defaultů mimo starý rozsah; žádný explicitní NVS zásah není potřeba.
+- ADR-007 zůstává `Accepted`, dostává křížový odkaz „*Rozšířeno: ADR-008*".
+- ADR-006 beze změny — při NaN po bootu je `bs_defrost` false, žádná hrana,
+  `run_defrost` nefírne, floor se nespustí. Žádná kolize.
+- BACKLOG: OI9 rozšířena o floor + rename; nová hardening položka dle bodu 8.
+
+**Odkazy:** ADR-007, ADR-006, ADR-004, ADR-005 (odložený rename friendly names),
+Windows OI25/ERR8 (precedent absolutního max on-time).
+
+---
+
+*Poslední ADR: ADR-008. Příští číslo: ADR-009.*

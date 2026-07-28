@@ -1,0 +1,181 @@
+# ===================== GARAGE_DRAIN_DEFROST — HARDWARE I/O TEST (test01) =====================
+# Purpose: bare hardware bring-up verification on the finished PCB. NO control logic —
+# no defrost/error/HEAT_MODE, no simulation mode, no scripts/intervals. Every input and
+# output (including reserved DO3/DO4, DI1/DI2) is exposed directly via the Web UI /
+# HA so each GPIO/SSR/LED can be manually toggled and observed in isolation.
+#
+# DS18B20: 2x sensor, addresses unknown — exposed by `index:` (0/1), not `address:`.
+# After connecting them to the 1-Wire bus, check the boot log (USB or `esphome logs`
+# OTA task) for the discovered 64-bit ROM addresses, then transcribe those into the
+# production YAML's `address:` fields (OI1).
+#
+# ⚠️ SAFETY: DO1/DO2 drive 230 VAC via SSR to the heating cables. Do not connect real
+# heating cables until DO1/DO2 have been verified with a test load / multimeter.
+#
+# NOT for production use — throwaway hardware bring-up tool, not tracked in ADR/BACKLOG.
+# ================================================================================================
+
+esphome:
+  name: esp-garage-drain-defrost-test01
+  friendly_name: "Garage Drain Defrost - HW TEST"
+  comment: !secret device_comment
+  build_path: "D:/Code/VSCode_Programs/ESP32/GARAGE_DRAIN_DEFROST/firmware/.esphome/test01"
+
+esp32:
+  board: esp32dev
+  framework:
+    type: esp-idf
+
+logger:
+  level: DEBUG
+
+api:
+  encryption:
+    key: !secret api_encryption_key
+  reboot_timeout: 0s
+
+ota:
+  platform: esphome
+  password: !secret ota_password
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  power_save_mode: none
+  manual_ip:
+    static_ip: !secret static_ip
+    gateway: !secret gateway
+    subnet: !secret subnet
+    dns1: !secret dns1
+  ap:
+    ssid: !secret fallback
+
+# Web UI — primary interface for this test build
+web_server:
+  port: 80
+  version: 2
+
+# ------------------------ 1-Wire BUS (shared) ------------------------
+one_wire:
+- platform: gpio
+  pin: GPIO21 # shared DS18B20 bus
+
+# ======================== SENSORS — DS18B20 (address unknown, by index) ========================
+sensor:
+- platform: dallas_temp
+  name: "DS18B20 index 0 (addr TBD)"
+  id: ds_test_index0
+  index: 0
+  update_interval: 10s
+  accuracy_decimals: 2
+
+- platform: dallas_temp
+  name: "DS18B20 index 1 (addr TBD)"
+  id: ds_test_index1
+  index: 1
+  update_interval: 10s
+  accuracy_decimals: 2
+
+# ======================== DIGITAL INPUTS ========================
+binary_sensor:
+# DI1 (GPIO36)
+- platform: gpio
+  id: di1_in
+  name: "DI1 (GPIO36)"
+  pin:
+    number: GPIO36
+  filters:
+  - delayed_on: 30ms
+  - delayed_off: 30ms
+
+# DI2 (GPIO39)
+- platform: gpio
+  id: di2_in
+  name: "DI2 (GPIO39)"
+  pin:
+    number: GPIO39
+  filters:
+  - delayed_on: 30ms
+  - delayed_off: 30ms
+
+# ======================== DIGITAL OUTPUTS (raw pins) ========================
+output:
+# DO1: SSR – Chassis heater (GPIO32)
+- platform: gpio
+  id: do1_out
+  pin:
+    number: GPIO32
+    inverted: false
+
+# DO2: SSR – Drain heater (GPIO33)
+- platform: gpio
+  id: do2_out
+  pin:
+    number: GPIO33
+    inverted: false
+
+# DO3: OC 5/12V (GPIO25) – reserved
+- platform: gpio
+  id: do3_out
+  pin:
+    number: GPIO25
+    inverted: false
+
+# DO4: OC 5/12V (GPIO26) – reserved
+- platform: gpio
+  id: do4_out
+  pin:
+    number: GPIO26
+    inverted: false
+
+# WD LED (GPIO4)
+- platform: gpio
+  id: led_wd_out
+  pin:
+    number: GPIO4
+    inverted: false
+
+# ERR LED (GPIO2) — strapping pin, safe via BSS138 per hardware design
+- platform: gpio
+  id: led_err_out
+  pin:
+    number: GPIO2
+    inverted: false
+
+# ======================== SWITCHES (manual on/off for every output, via Web UI/HA) ========================
+switch:
+- platform: output
+  name: "DO1 - Chassis Heater SSR (GPIO32)"
+  id: sw_do1
+  output: do1_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "DO2 - Drain Heater SSR (GPIO33)"
+  id: sw_do2
+  output: do2_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "DO3 - Reserved OC (GPIO25)"
+  id: sw_do3
+  output: do3_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "DO4 - Reserved OC (GPIO26)"
+  id: sw_do4
+  output: do4_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "WD LED (GPIO4)"
+  id: sw_led_wd
+  output: led_wd_out
+  restore_mode: ALWAYS_OFF
+
+- platform: output
+  name: "ERR LED (GPIO2)"
+  id: sw_led_err
+  output: led_err_out
+  restore_mode: ALWAYS_OFF

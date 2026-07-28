@@ -4,6 +4,91 @@
 
 ---
 
+## S5 — 2026-07-21 až 2026-07-28 (Implementer/CC) — defrost implementace + bench test (přerušeno)
+
+> Nejdelší session dosud, přes více dnů (Lubor testoval na hotovém HW, ne breadboardu).
+> Číslování protíná S6 (Architekt, ADR-008 uprostřed) — viz S6 blok níže pro kontext.
+
+**Provedeno:**
+- Batch 1+2 (2026-07-21): OI8 (`on_boot` no-op odstraněn, ADR-006 komentář u
+  edge-triggeru), OI12 (`send_first_at: 1` na 4× DS18B20), OI9 (`wait_until`
+  místo pevného `delay:` v defrost cyklech)
+- Uprostřed práce Lubor identifikoval mezeru (DEFROST_ORDERED nemá hysterezi,
+  čistě condition-driven cyklus zranitelný vůči šumu) → eskalace na Architekta →
+  S6 (ADR-008, floor + ceiling)
+- Implementace ADR-008: nové entity `chassis_time_floor`/`drain_time_floor`,
+  přejmenování `_time_min`→`_time_ceiling`, dvoufázová struktura scriptů,
+  retrigger bez gate na `defrost_running`
+- Oprava prostředí: PlatformIO vlastní venv mělo rozbitý "editable install"
+  esptool (jen metadata, chybějící modul) — force-reinstall opravil, `esphome
+  compile` teď dojede až k `.bin`
+- Vytvořen `ESP32-D0WD-V3_Gar_Drain_Defrost_test01.yaml` — bare I/O hardware
+  bring-up test (žádná logika), pro ověření hotové desky
+- Hardware ověřen funkční (test01), komisionovány reálné adresy T1/T2
+  (OI1 částečně hotovo — T3/T4 zbývá)
+- Bench test dle `TEST_PLAN.md` na produkčním firmware: Fáze 0–2 dokončeny
+  - **BUG-001** nalezen a opraven: template switche (`sw_main_system_enable`,
+    `sim_mode`) měly defaultní `restore_mode: ALWAYS_OFF`, což při každém bootu
+    aktivně spustilo `turn_off_action` a přepsalo `restore_value: true` globály
+    zpátky na false — root cause dohledán přímo ve zdrojáku ESPHome
+    (`template_switch.cpp`). Fix: `restore_mode: DISABLED` na obou.
+  - **BUG-002** nalezen a opraven: přepnutí `sim_mode` (kterýmkoli směrem) vždy
+    spustilo oba heatery — race condition mezi 4 nezávisle pollovanými `_used`
+    senzory (rozdílný update_interval timing). Fix: `component.update` na všech
+    čtyřech, synchronně po přepnutí.
+- Test přerušen 2026-07-28 (pokračování příště) — Fáze 3–6 zbývají
+
+**Výstupy:**
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (ADR-008, BUG-001, BUG-002 fixy,
+  T1/T2 adresy) — **necommitnuto**, čeká na dokončení testů
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost_test01.yaml` (nový, bring-up nástroj)
+- `docs/Software_DevDoc/TEST_PLAN.md` (nový), `BUGS.md` (+BUG-001, +BUG-002),
+  `BACKLOG.md` (OI1 částečně, OI8→Done, OI9/OI12 update, +OI15),
+  `HANDOVER_20260722.md` (vytvořen během session, teď zastaralý — nový handover
+  potřeba pro pokračování)
+
+**Blokující:** žádné (čeká se na Lubora, ne technický blocker)
+**Další session:** Pokračování bench testu dle `TEST_PLAN.md` od Fáze 3 (floor/ceiling
+scénáře 3a–3d). Po dokončení všech fází: commit + push celého S5 rozsahu.
+
+---
+
+## S6 — 2026-07-22 (Architekt) — ADR-008: minimální doba topení (floor)
+
+**Provedeno:**
+- Podnět z S5 (Implementer): DEFROST_ORDERED nemá hysterezi (na rozdíl od HEAT_MODE),
+  takže čistě condition-driven cyklus z ADR-007 je zranitelný vůči šumu kolem prahu —
+  krátké zakolísání by vypnulo heater dřív, než topný kabel při tepelné setrvačnosti
+  šasi/trubky cokoli ohřeje.
+- ADR-008 (rozšiřuje ADR-007, nesuperseduje) — dva prahy místo jednoho:
+  garantovaná minimální doba (floor) + bezpečnostní strop (ceiling). Dvoufázová
+  struktura `turn_on → delay(floor) → wait_until(!DEFROST_ORDERED, timeout=ceiling−floor)
+  → turn_off`.
+- Nové entity `chassis_time_floor`/`drain_time_floor` (1–10 min, default 2/3).
+  Přejmenováno `chassis_time_min`→`chassis_time_ceiling`/`drain_time_min`→
+  `drain_time_ceiling` (15–60 min, default 20/20) — `_time_min` bylo po zavedení
+  floor zavádějící (označovalo maximum).
+- Retrigger: gate `defrost_running == false` na edge-triggeru zrušen — nová hrana
+  restartuje cyklus přes `mode: restart` místo aby byla spolknuta, dokud běží pomalejší
+  z dvojice chassis/drain. `defrost_running` degraduje na čistý stavový příznak.
+- Akceptované omezení (bod 8): retrigger resetuje rozpočet stropu, kmitající podmínka
+  může topení protahovat — ceiling chrání jen proti zaseknuté, ne kmitající podmínce.
+  Řešení (nezávislý max on-time, Windows ERR8/OI25 precedent) odloženo do BACKLOGu,
+  k pozorování v zimní sezóně.
+- ARCHITECTURE.md §4.4 a §6 přepsány (v1.4). Rename friendly names odložen na
+  ADR-005 execution session (spolu s ADR-007's odloženým rename).
+
+**Výstupy:**
+- DECISIONS.md (+ADR-008, cross-ref u ADR-007), ARCHITECTURE.md (§4.4, §6, v1.4),
+  BACKLOG.md (OI9 rozšířena, nová OI15), SESSION_LOG.md (tento blok).
+- Handoff prompt pro CC (implementace ADR-008 ve firmware + OI12 v jednom kroku).
+
+**Blokující:** žádné
+**Další session:** Implementační pokračování S5 (Implementer/CC) — ADR-008 do
+firmware YAML, dokončení, bench test (Simulation Mode) dle TEST_PLAN.md.
+
+---
+
 ## S4 — 2026-07-21 (Architekt) — formální ADR pro F1/F4 + doc-commit
 
 **Provedeno:**

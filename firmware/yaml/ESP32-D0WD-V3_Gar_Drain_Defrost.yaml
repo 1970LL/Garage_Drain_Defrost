@@ -15,12 +15,6 @@ esphome:
   comment: !secret device_comment
   build_path: "D:/Code/VSCode_Programs/ESP32/GARAGE_DRAIN_DEFROST/firmware/.esphome"
 
-  # Prevent auto-running the defrost script after each reboot (manual start only)
-  on_boot:
-    priority: -10
-    then:
-    - script.stop: run_defrost
-
 esp32:
   board: esp32dev
   framework:
@@ -113,7 +107,7 @@ globals:
 sensor:
 # Outside Temperature (T1)
 - platform: dallas_temp
-  address: 0x1 # TODO: replace with real address
+  address: 0x3400000051876f28 # commissioned S5 2026-07-28 (test01 HW bring-up)
   name: "Outside Temperature"
   id: t_outside
   update_interval: 120s
@@ -122,11 +116,13 @@ sensor:
     median:
       window_size: 5
       send_every: 5
-    #  send_first_at: 3
+      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
+                        # (was ~10 min blind window after every boot -> false T1/T2,
+                        # T3/T4 error flags; now ~1 poll interval)
 
     # Toshiba Evaporator (T2)
 - platform: dallas_temp
-  address: 0x2 # TODO: replace with real address
+  address: 0xab030a9794259928 # commissioned S5 2026-07-28 (test01 HW bring-up)
   name: "Evaporator Temperature"
   id: t_evap
   update_interval: 120s
@@ -135,7 +131,9 @@ sensor:
     median:
       window_size: 5
       send_every: 5
-    #  send_first_at: 3
+      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
+                        # (was ~10 min blind window after every boot -> false T1/T2,
+                        # T3/T4 error flags; now ~1 poll interval)
 
     # Toshiba Chassis (T3)
 - platform: dallas_temp
@@ -148,7 +146,9 @@ sensor:
     median:
       window_size: 5
       send_every: 5
-    #  send_first_at: 3
+      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
+                        # (was ~10 min blind window after every boot -> false T1/T2,
+                        # T3/T4 error flags; now ~1 poll interval)
 
     # Drain Pipe (T4)
 - platform: dallas_temp
@@ -161,7 +161,9 @@ sensor:
     median:
       window_size: 5
       send_every: 5
-    #  send_first_at: 3
+      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
+                        # (was ~10 min blind window after every boot -> false T1/T2,
+                        # T3/T4 error flags; now ~1 poll interval)
 
 # VL53L0X Distance Sensor (Address: 0x41, Enable: GPIO27) - delete later on, only for testing
 # *******************************************************************************************
@@ -455,10 +457,17 @@ output:
 switch:
 # MAIN SYSTEM SWITCH
 # Enables/disables entire system (maintenance/summer mode)
+# BUG-001: default switch restore_mode is ALWAYS_OFF (esphome/components/switch,
+# not overridden here before this fix) — TemplateSwitch::setup() acts on that on
+# every boot, firing turn_off_action and resetting main_system_enabled to false
+# regardless of its own restore_value: true. DISABLED = state comes purely from
+# the lambda (which already reads the correctly-restored global); no action
+# fires at boot.
 - platform: template
   name: "Main System Enable"
   id: sw_main_system_enable
   optimistic: false
+  restore_mode: DISABLED
   lambda: |-
     // Reflect the actual internal state
     return id(main_system_enabled);
@@ -507,18 +516,39 @@ switch:
   internal: true
 
 # SIMULATION CONTROLS
+# BUG-001: same fix as Main System Enable above — without restore_mode: DISABLED,
+# default ALWAYS_OFF would reset sim_mode_state to false on every boot despite
+# its own restore_value: true.
 - platform: template
   name: "Simulation Mode"
   id: sim_mode
   optimistic: false
+  restore_mode: DISABLED
   lambda: |-
     return id(sim_mode_state);
+  # BUG-002: t_outside_used/t_evap_used/t_chassis_used/t_drain_used each poll on
+  # their own independent update_interval: 5s, uncoordinated with this switch or
+  # each other. Toggling sim_mode without forcing a synchronized refresh leaves a
+  # window (up to 5s) where some _used sensors already reflect the new mode and
+  # others still show the old one — e.g. t_evap_used stale-real (~27C) vs
+  # t_outside_used fresh-sim (~5C) — which can spuriously satisfy DEFROST_ORDERED
+  # and start a full defrost cycle (floor-guaranteed by ADR-008) for no real
+  # reason. Force all four to update together, right after the mode flips, to
+  # close that window.
   turn_on_action:
   - lambda: |-
       id(sim_mode_state) = true;
+  - component.update: t_outside_used
+  - component.update: t_evap_used
+  - component.update: t_chassis_used
+  - component.update: t_drain_used
   turn_off_action:
   - lambda: |-
       id(sim_mode_state) = false;
+  - component.update: t_outside_used
+  - component.update: t_evap_used
+  - component.update: t_chassis_used
+  - component.update: t_drain_used
 
 # ======================== SCRIPTS ========================
 script:
@@ -574,8 +604,15 @@ script:
       - delay: 0.8s # gap after T3/T4 pattern
   # Placeholder for next errors (if added in future)    
 
-  # Defrost sequence – uses HA-configurable times (minutes)
-  # Main script – starts nested scripts and waits for their completion
+  # Defrost sequence – starts nested scripts and waits for their completion.
+  # Retrigger (ADR-008): a fresh DEFROST_ORDERED rising edge is NOT gated on
+  # defrost_running anymore — mode: restart on all three scripts means a new
+  # edge simply restarts the whole cycle (turn_on on an already-on heater is
+  # idempotent). defrost_running is a pure status flag now, not an interlock.
+  # Known limitation: a condition oscillating faster than the floor can keep
+  # resetting each cycle's ceiling budget, extending heating indefinitely —
+  # accepted for now (ADR-008 §8); the ceiling only guards a stuck condition,
+  # not a flapping one.
 - id: run_defrost
   mode: restart
   then:
@@ -588,21 +625,42 @@ script:
   - lambda: 'id(defrost_running) = false;'
 
 # Nested script: chassis heater
-# Runs for chassis_time_min (HA-adjustable, default 2 min)
+# ADR-008: two-phase — guaranteed floor (runs regardless of condition), then
+# condition-driven until DEFROST_ORDERED drops or the ceiling is reached,
+# whichever comes first. chassis_time_floor (default 2 min) protects against
+# short-cycling since DEFROST_ORDERED has no hysteresis; chassis_time_ceiling
+# (default 20 min, ADR-007) is the fail-safe max against a stuck condition.
 - id: defrost_chassis_cycle
   mode: restart
   then:
   - switch.turn_on: sw_heater_chassis
-  - delay: !lambda 'return (uint32_t)(id(chassis_time_min).state * 60000);'
+  - delay: !lambda 'return (uint32_t)(id(chassis_time_floor).state * 60000);'
+  - wait_until:
+      condition:
+        lambda: 'return !id(bs_defrost).state;'
+      timeout: !lambda |-
+        const uint32_t floor_ms = (uint32_t)(id(chassis_time_floor).state * 60000);
+        const uint32_t ceiling_ms = (uint32_t)(id(chassis_time_ceiling).state * 60000);
+        if (floor_ms >= ceiling_ms) return (uint32_t) 0;
+        return ceiling_ms - floor_ms;
   - switch.turn_off: sw_heater_chassis
 
 # Nested script: drain heater
-# Runs for drain_time_min (HA-adjustable, default 3 min)
+# ADR-008: two-phase — see defrost_chassis_cycle above for rationale.
+# drain_time_floor (default 3 min) / drain_time_ceiling (default 20 min, ADR-007).
 - id: defrost_drain_cycle
   mode: restart
   then:
   - switch.turn_on: sw_heater_drain
-  - delay: !lambda 'return (uint32_t)(id(drain_time_min).state * 60000);'
+  - delay: !lambda 'return (uint32_t)(id(drain_time_floor).state * 60000);'
+  - wait_until:
+      condition:
+        lambda: 'return !id(bs_defrost).state;'
+      timeout: !lambda |-
+        const uint32_t floor_ms = (uint32_t)(id(drain_time_floor).state * 60000);
+        const uint32_t ceiling_ms = (uint32_t)(id(drain_time_ceiling).state * 60000);
+        if (floor_ms >= ceiling_ms) return (uint32_t) 0;
+        return ceiling_ms - floor_ms;
   - switch.turn_off: sw_heater_drain
 
 # ======================== INTERVALS ========================
@@ -681,8 +739,21 @@ interval:
         }
       }
 
-# Edge trigger: start defrost on rising DEFROST_ORDERED (when not running)
+# Edge trigger: start/restart defrost on rising DEFROST_ORDERED
 # Detects transition from false→true and launches defrost cycle
+#
+# ADR-006 (boot-resume, variant B): `static bool last` resets to false on every
+# reboot. If DEFROST_ORDERED is already true the first time this evaluates after
+# boot, it reads as a rising edge and defrost auto-resumes — this is intentional,
+# not a bug. No explicit on_boot resume is added on purpose (see ADR-006). Worst
+# case is missing one in-progress defrost cycle across a reboot, bounded by how
+# long DS18B20 sensors take to report valid data again (~1 poll interval once
+# send_first_at: 1 is set, OI12 — was ~10 min before that fix).
+#
+# ADR-008: no longer gated on `!defrost_running` — a fresh rising edge always
+# restarts run_defrost (mode: restart handles re-entry safely, see comment
+# there). This lets a faster-ceiling heater re-arm on a new edge even while a
+# slower one is still finishing its own cycle.
 - interval: 1s
   then:
   - if:
@@ -693,8 +764,8 @@ interval:
           const bool rising = (!last && now);
           last = now;
 
-          // Only start if system is enabled and no defrost is already running
-          return id(main_system_enabled) && rising && !id(defrost_running);
+          // Start/restart whenever the system is enabled and a fresh edge occurs
+          return id(main_system_enabled) && rising;
       then:
       - script.execute: run_defrost
 
@@ -793,28 +864,54 @@ number:
   restore_value: true
   initial_value: 7.0
 
-# Heater run times (minutes)
-# Chassis heater activation duration
+# Heater timing (minutes) — two-tier: floor (guaranteed min) + ceiling (safety
+# max), ADR-008. Heater runs the floor unconditionally, then follows
+# DEFROST_ORDERED until it drops or the ceiling is hit, whichever comes first.
+# Chassis heater: guaranteed minimum run time (floor) — protects against
+# short-cycling since DEFROST_ORDERED has no hysteresis.
 - platform: template
-  name: "Chassis Heater Time (min)"
-  id: chassis_time_min
+  name: "Chassis Heater Min Time (min)"
+  id: chassis_time_floor
   min_value: 1
-  max_value: 60
+  max_value: 10
   step: 1
   optimistic: true
   restore_value: true
   initial_value: 2
 
-# Drain heater activation duration
+# Drain heater: guaranteed minimum run time (floor)
 - platform: template
-  name: "Drain Heater Time (min)"
-  id: drain_time_min
+  name: "Drain Heater Min Time (min)"
+  id: drain_time_floor
   min_value: 1
-  max_value: 60
+  max_value: 10
   step: 1
   optimistic: true
   restore_value: true
   initial_value: 3
+
+# Chassis heater: max activation duration (ceiling — fail-safe against a stuck
+# condition, ADR-007/008). Range 15-60 keeps floor < ceiling structurally true.
+- platform: template
+  name: "Chassis Heater Time (min)"
+  id: chassis_time_ceiling
+  min_value: 15
+  max_value: 60
+  step: 1
+  optimistic: true
+  restore_value: true
+  initial_value: 20
+
+# Drain heater: max activation duration (ceiling)
+- platform: template
+  name: "Drain Heater Time (min)"
+  id: drain_time_ceiling
+  min_value: 15
+  max_value: 60
+  step: 1
+  optimistic: true
+  restore_value: true
+  initial_value: 20
 
 # SIMULATION CONTROLS (for testing without hardware)
 # Manual outside temperature (used when sim_mode is ON)
