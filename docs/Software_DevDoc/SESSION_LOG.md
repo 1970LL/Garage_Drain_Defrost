@@ -4,10 +4,11 @@
 
 ---
 
-## S5 — 2026-07-21 až 2026-07-28 (Implementer/CC) — defrost implementace + bench test (přerušeno)
+## S5 — 2026-07-21 až 2026-07-30 (Implementer/CC) — defrost implementace + bench test (dokončeno)
 
 > Nejdelší session dosud, přes více dnů (Lubor testoval na hotovém HW, ne breadboardu).
-> Číslování protíná S6 (Architekt, ADR-008 uprostřed) — viz S6 blok níže pro kontext.
+> Číslování protíná S6 (Architekt, ADR-008 uprostřed) a S7 (Architekt, ADR-009
+> uprostřed) — viz oba bloky níže pro kontext.
 
 **Provedeno:**
 - Batch 1+2 (2026-07-21): OI8 (`on_boot` no-op odstraněn, ADR-006 komentář u
@@ -37,19 +38,85 @@
     senzory (rozdílný update_interval timing). Fix: `component.update` na všech
     čtyřech, synchronně po přepnutí.
 - Test přerušen 2026-07-28 (pokračování příště) — Fáze 3–6 zbývají
+- Pokračování 2026-07-30: Fáze 3 (floor/ceiling scénáře 3a-3d) i Fáze 4 T1/T2 dokončeny
+  a bench-potvrzeny. Na žádost Lubora kompletně odstraněn testovací I2C blok (VL53L0X,
+  BME280, I2C bus) — OI2, ne jen zakomentováno
+- **BUG-003** nalezen a opraven: on-demand DS18B20 refresh intervaly (T2 při HEAT_MODE,
+  T3/T4 při běžícím heateru) měly `interval: 1s`/`4s` místo komentářem tvrzené kadence
+  5s/20s — hammerovaly sdílenou 1-Wire sběrnici rychleji, než DS18B20 stihne dokončit
+  konverzi (~750ms). Fix: perioda intervalu opravena na 5s/20s.
+- **BUG-004** nalezen a opraven (po BUG-003, T1/T2 stále nekonzistentně hlásily poruchu
+  po bootu): root cause dohledán ve zdroji ESPHome (`scheduler.cpp` — náhodný 0-5s offset
+  prvního spuštění, nezávisle pro senzor i error-check; `filter.cpp` — `send_first_at:1`
+  publikuje i defaultní `NAN`, `send_every:5` pak drží tuhle hodnotu dalších 5 cyklů).
+  3-vodičové zapojení DS18B20 (potvrzeno Luborem) vyloučilo parazitní napájení jako
+  příčinu. Fix: 10s startup grace před vyhodnocením `err_t1_t2_fail`/`err_t3_t4_fail`.
+- Fáze 5 (regrese): Lubor našel, že `DEFROST_ORDERED` sepne heatery i s `HEAT_MODE`
+  OFF (Sim Outside 4°C/HEAT_MODE OFF + Sim Evaporator 17°C) — konkretizace už dřív
+  otevřené OI6. Eskalováno na Architekta → S7 (ADR-009, DEFROST_ORDERED gated na
+  HEAT_MODE)
+- Implementace ADR-009: `bs_defrost` lambda +`&& id(bs_heat_mode).state`,
+  `ARCHITECTURE.md §4.3` (3. podmínka), `DECISIONS.md` (+ADR-009 verbatim),
+  `BACKLOG.md` (OI6→Done, +OI16 per-surface freeze gate hardening item)
+- Fáze 5 (zbytek regresních bodů) a 5a (ADR-009 validace) dokončeny a bench-potvrzeny
+- Lubor si všiml, že `_used` senzory pollují na plošných 5s bez ohledu na HEAT_MODE
+  nebo skutečnou změnu zdroje (zaplevňuje log) — zapsáno jako **OI17** (event-driven
+  refresh, stejný vzor jako BUG-002 fix), odloženo záměrně, aby nezpomalovalo
+  rozjetý bench test. Zároveň zapsána **OI18** — souhrnná revize celého řetězce
+  vzorkování → filtr → publikace (ne jen po jednotlivých článcích) před field
+  nasazením.
+- Fáze 6 (reálný SSR výstup se zkušební zátěží) dokončena a bench-potvrzena
+- **Bench test uzavřen: OK s výjimkou T3/T4** (očekávané, blokováno na OI1 — chybí
+  fyzické senzory). Všechny ostatní fáze (0-6, vč. 5a) bench-potvrzeny
 
 **Výstupy:**
-- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (ADR-008, BUG-001, BUG-002 fixy,
-  T1/T2 adresy) — **necommitnuto**, čeká na dokončení testů
-- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost_test01.yaml` (nový, bring-up nástroj)
-- `docs/Software_DevDoc/TEST_PLAN.md` (nový), `BUGS.md` (+BUG-001, +BUG-002),
-  `BACKLOG.md` (OI1 částečně, OI8→Done, OI9/OI12 update, +OI15),
-  `HANDOVER_20260722.md` (vytvořen během session, teď zastaralý — nový handover
-  potřeba pro pokračování)
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (ADR-008/009, BUG-001-004 fixy,
+  T1/T2 adresy, I2C blok odstraněn) — **necommitnuto**, čeká na pokyn k commitu
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost_test01.yaml` (bring-up nástroj)
+- `docs/Software_DevDoc/TEST_PLAN.md` (uzavřen), `BUGS.md` (+BUG-001..004),
+  `DECISIONS.md` (+ADR-009), `ARCHITECTURE.md` (v1.7), `BACKLOG.md` (OI1/OI2/OI6/
+  OI8/OI9/OI12 update, +OI15/OI16/OI17/OI18), `HANDOVER_20260730.md`
 
-**Blokující:** žádné (čeká se na Lubora, ne technický blocker)
-**Další session:** Pokračování bench testu dle `TEST_PLAN.md` od Fáze 3 (floor/ceiling
-scénáře 3a–3d). Po dokončení všech fází: commit + push celého S5 rozsahu.
+**Blokující:** žádné — čeká se na pokyn k commitu (T3/T4 samo o sobě neblokuje,
+je to samostatný OI1 úkol na fyzický hardware)
+**Další session:** Commit + push celého rozsahu S5/S7 (na pokyn). Poté: OI1 (T3/T4
+fyzické senzory) až budou k dispozici; implementační session pro ADR-004 (vyžaduje
+OI10); entity rename session (ADR-005).
+
+---
+
+## S7 — 2026-07-30 (Architekt) — ADR-009: DEFROST_ORDERED gated na HEAT_MODE
+
+> Handoff prompt referoval sám sebe jako "Session: S6" — Architekt window k tomu
+> nemá živý přístup do SESSION_LOG.md (viz ADR-003, sync je Luborova ruční role),
+> takže neví, že S6 je už obsazené (ADR-008, 2026-07-22). Implementer přečísloval
+> na S7 (další volné číslo), ADR-009 text samotný zůstal beze změny (verbatim
+> požadavek) — jen tenhle SESSION_LOG blok má správné číslo.
+
+**Provedeno:**
+- Podnět z S5 (Implementer/Lubor bench test, Fáze 5 regrese): `DEFROST_ORDERED`
+  kontroluje jen `main_system_enabled`, na `HEAT_MODE` se vůbec neptá — Sim Outside
+  4°C (HEAT_MODE OFF) + Sim Evaporator 17°C přesto spustí oba heatery. Konkretizace
+  už dřív otevřené OI6 (code review S3, "K prověření").
+- ADR-009 — `DEFROST_ORDERED` gated na `HEAT_MODE`: do AND podmínky `bs_defrost`
+  přidáno `&& id(bs_heat_mode).state`. Fyzikální zdůvodnění: DEFROST_ORDERED
+  detekuje produkci kondenzátu (jednotka odmrazuje), ne riziko zamrznutí —
+  HEAT_MODE je proxy pro to druhé a obě podmínky musí platit současně, aby topení
+  dávalo smysl. Gate umístěn uvnitř `bs_defrost` (jedno místo pro policy), ne na
+  edge-triggeru — floor (ADR-008) doběhne i při poklesu HEAT_MODE uprostřed cyklu.
+- Známé omezení zapsáno do ADR-009: HEAT_MODE prahy (2/4°C) jsou proxy "chladno",
+  ne měřený bod mrazu povrchu — přesnější per-surface gate odložen do BACKLOGu
+  (nová OI16, k pozorování v zimní sezóně).
+
+**Výstupy:**
+- DECISIONS.md (+ADR-009), ARCHITECTURE.md (§4.3, v1.7), BACKLOG.md (OI6→Done,
+  nová OI16), SESSION_LOG.md (tento blok).
+- Handoff prompt pro CC (implementace ADR-009 — jednořádková změna v `bs_defrost`
+  + doc-commit).
+
+**Blokující:** žádné
+**Další session:** Implementační pokračování S5 (Implementer/CC) — ADR-009 do
+firmware YAML, bench potvrzení (Sim Outside/Evaporator scénář z podnětu).
 
 ---
 

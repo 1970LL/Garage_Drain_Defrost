@@ -107,6 +107,142 @@ srovnání přímo do jedné lambdy bez mezikroku přes nezávisle pollované se
 
 ---
 
+### BUG-003 — On-demand DS18B20 refresh intervaly hammerují sběrnici rychleji, než tvrdí komentář
+
+**Nalezeno:** S5, 2026-07-30, bench test na hotovém HW (TEST_PLAN.md Fáze 4, T1/T2
+warm-up krok)
+**Nahlásil:** Lubor
+
+**Příznak:** Dvě nezávislá pozorování v logu:
+1. Vyhodnocení `err_t1_t2_fail` po resetu není konzistentní — někdy poruchu nahlásí,
+   někdy ne (i když T1/T2 hodnoty se objeví v logu okamžitě po bootu). Pokud se
+   porucha nahlásí, srovná se do ~10-20 s.
+2. V logu se opakovaně (ne vždy) objevují `[W][component:395]: dallas_temp.sensor
+   set Warning flag: scratch pad checksum invalid` se scratch padem `FF.FF.FF.FF.FF.FF.FF.FF.FF`,
+   a `'Evaporator Temperature': Got Temperature=...` se loguje s frekvencí ~1 s,
+   přestože senzor má `update_interval: 120s`.
+
+**Root cause:**
+
+Dva "on-demand refresh" intervaly ([`ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`](../../firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml)):
+
+```yaml
+# HEAT_MODE active → refresh Evaporator (T2) every 5 s ...
+- interval: 1s
+  then:
+  - if:
+      condition: {binary_sensor.is_on: bs_heat_mode}
+      then: [component.update: t_evap]
+
+# Any heater ON → refresh Chassis (T3) & Drain (T4) every 20 s ...
+- interval: 4s
+  then:
+  - if:
+      condition: {or: [switch.is_on: sw_heater_chassis, switch.is_on: sw_heater_drain]}
+      then: [component.update: t_chassis, component.update: t_drain]
+```
+
+Komentáře tvrdí kadenci 5 s / 20 s, ale samotný `interval:` byl nastaven na 1 s / 4 s
+a kód nemá žádné počítání ticků — `component.update` se tedy spouští **při každém
+tiku**, ne po pátém, jak komentář popisuje. V bench testu bylo `Sim Outside = 2.0 °C`
+(pod `heat_on_th`) → `HEAT_MODE` ON → T2 blok reálně bušil `component.update: t_evap`
+každou sekundu.
+
+`DallasTemperatureSensor::update()` (`dallas_temp.cpp:39-56`) při zavolání pošle nový
+`START_CONVERSION` a naplánuje čtení scratch padu přes `set_timeout()` po
+`millis_to_wait_for_conversion_()` (750 ms při 12-bit rozlišení, `dallas_temp.cpp:15-25`).
+Nekontroluje, jestli předchozí konverze ještě neběží. Když `component.update()` přijde
+znovu dřív, než předchozí konverze doběhne (při 1s intervalu vs. 750ms konverzi je to
+těsné a snadno se to timingem jiných komponent posune), dojde ke kolizi na sdílené
+1-Wire sběrnici (GPIO21) — výsledkem je poškozený scratch pad (`FF...FF`) a neplatný
+CRC (Pozorování 2). Stejná sběrnice je sdílená s T1 (`t_outside`) — kolize může
+zasáhnout i jeho čtení, což vysvětluje transientní NaN hned po bootu a nekonzistentní
+`err_t1_t2_fail` chování (Pozorování 1); je to race condition, ne deterministická chyba,
+proto se projevuje jen "někdy".
+
+Stejný vzor (kratší `interval:`, chybějící gating) je i v T3/T4 bloku — zatím
+neškodný, protože T3/T4 mají fiktivní adresy (`0x3`/`0x4`, žádný fyzický senzor), ale
+po komisioningu reálného HW (OI1) by šlo o totéž riziko.
+
+**Oprava:** Změněna perioda obou intervalů tak, aby skutečně odpovídala kadenci
+popsané v komentáři — `interval: 1s` → `interval: 5s` (T2 blok), `interval: 4s` →
+`interval: 20s` (T3/T4 blok). Žádná nová abstrakce (počítadlo ticků) není potřeba,
+komentář popisoval zamýšlené chování správně, jen implementace neodpovídala.
+
+**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem (TEST_PLAN.md
+Fáze 4).
+
+**Poučení (AP kandidát?):** `interval:` blok s podmínkou uvnitř (`if: ... then:
+component.update`) nemá žádnou vestavěnou ochranu proti tomu, aby perioda intervalu
+neodpovídala komentáři/záměru — na rozdíl od `update_interval:` na samotném senzoru,
+kde je perioda a chování svázané v jednom místě. Při psaní podobných "on-demand
+refresh" bloků zkontrolovat, že `interval:` hodnota je numericky shodná s tím, co
+tvrdí komentář, zvlášť když refreshovaný senzor sdílí fyzickou sběrnici (1-Wire, I2C,
+UART) s jinými pravidelně pollovanými senzory — bus kolize nebývá vidět v `esphome
+config`/`compile`, jen za běhu na reálném HW.
+
+---
+
+### BUG-004 — `err_t1_t2_fail` po bootu občas nahlásí poruchu, i když senzory jsou v pořádku
+
+**Nalezeno:** S5, 2026-07-30, bench test na hotovém HW (TEST_PLAN.md Fáze 4, T1/T2
+warm-up krok), po opravě BUG-003
+**Nahlásil:** Lubor
+**HW kontext:** DS18B20 T1-T4 potvrzeno 3-vodičově (VCC/GND/DATA, externí napájení,
+ne parazitní) — vyloučilo to hypotézu o kolapsu "strong pull-up" při parazitním
+napájení jako příčinu.
+
+**Příznak:** Po restartu `err_t1_t2_fail` nekonzistentně (ne vždy) nahlásí poruchu,
+přestože syrová čtení T1/T2 v logu vypadají v pořádku (`Got Temperature=...` s platným
+checksumem hned od prvního čtení). Pokud se porucha objeví, sama zmizí do ~18-20 s.
+
+**Root cause:**
+
+Dva nezávislé zdroje náhodnosti se v prvních sekundách po bootu potkávají:
+
+1. `App.scheduler`/`Scheduler::set_interval` (`scheduler.cpp:161-166`) spouští **první**
+   provedení KAŽDÉHO `interval:`/`PollingComponent` s náhodným offsetem
+   `0 až min(interval/2, 5000ms)` po jeho registraci. To platí jak pro senzory
+   (`t_outside`, `t_evap`, `update_interval: 120s` → offset 0-5000ms), tak pro sám
+   error-check (`interval: 20s` → offset 0-5000ms) — navzájem nezávisle.
+2. `MedianFilter`/`SlidingWindowFilter` (`filter.cpp:35-36,41-63`) s `send_first_at: 1`
+   publikuje výsledek hned po **prvním** přijatém vzorku (`send_at_ = send_every_ -
+   send_first_at_` → po prvním `new_value()` už `send_at_ >= send_every_`). Pokud je
+   ovšem tenhle první vzorek sám o sobě `NAN` (senzor v tu chvíli ještě nic
+   nepublikoval — `Sensor::state` je defaultně `NAN`, dokud neproběhne první
+   `publish_state()`), publikuje se okamžitě `NAN` — a další publikace přijde až po
+   **5 dalších** vzorcích (`send_every: 5`), ne dřív.
+
+Kombinace: `err_t1_t2_fail`'s vlastní první kontrola může (díky svému nezávislému
+náhodnému offsetu) proběhnout dřív, než T1 nebo T2 vůbec stihnou dokončit svou úplně
+první konverzi (750 ms při 12-bit rozlišení) a publikovat cokoliv — v tu chvíli vidí
+defaultní `NAN` a **správně** (dle svého kódu) nahlásí `should_error = true`. Jakmile
+senzor tuhle "prázdnou" hodnotu jednou publikuje (nebo pokud check proběhne až po ní),
+filtr díky `send_first_at: 1` čeká dalších 5 refresh cyklů (5 s dle BUG-003 fixu = až
+25 s), než publikuje reálnou teplotu a chybu smaže. Je to čistě timing race dvou
+nezávisle náhodně naplánovaných komponent — proto "někdy ano, někdy ne" — **ne**
+skutečná porucha senzoru ani kolize na sběrnici.
+
+**Oprava:** `err_t1_t2_fail` a `err_t3_t4_fail` intervaly nevyhodnocují stav prvních
+10 s po bootu (`lambda: 'return millis() >= 10000;'` jako podmínka kolem těla obou
+intervalů). 10 s bezpečně pokrývá nejhorší případ (5 s scheduler offset + 750 ms
+konverze + rezerva) bez zpomalení detekce skutečné poruchy za běhu (grace platí jen
+jednou, hned po bootu, ne opakovaně).
+
+**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem (TEST_PLAN.md
+Fáze 4).
+
+**Poučení (AP kandidát?):** Kombinace "publikuj hned po prvním vzorku" (`send_first_at:
+1`, žádoucí pro rychlé zveřejnění po bootu, viz OI12) a "vyhodnocuj chybu okamžitě bez
+debounce" je zranitelná vůči startovní timing race, pokud obě strany (senzor i error
+check) mají svůj vlastní nezávislý náhodný start. Řešení není vracet se k pomalejšímu
+filtru (to by vrátilo starý ~10min problém, co řešilo OI12), ale dát error-checku
+krátkou "startup grace" — vyhodnocovat chybu, až senzory měly reálnou šanci se poprvé
+ozvat. Zvážit stejný vzor u budoucích rychlých (bez WiFi-style dlouhého debounce)
+error-checků nad `PollingComponent` senzory.
+
+---
+
 ## Anti-patterny (AP-NNN)
 
 *(zatím žádné, projektově specifické — obecné AP-COM-* pro komunikaci s AI viz
@@ -114,5 +250,5 @@ WORKING_AGREEMENT.md §6)*
 
 ---
 
-*Poslední BUG: BUG-002. Příští číslo: BUG-003.*
+*Poslední BUG: BUG-004. Příští číslo: BUG-005.*
 *Poslední AP: žádný. Příští číslo: AP-001.*

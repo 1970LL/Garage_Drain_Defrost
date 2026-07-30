@@ -71,18 +71,6 @@ nový čtenář (nebo budoucí session) získal kompletní orientaci, aniž by �
 driveru. GPIO4 strapping pin **není** — původní poznámka (převzatá z README/Windows) byla
 fakticky nesprávná; opraveno po ověření přes `esphome config` (varování padlo jen na GPIO2).
 
-### 2.3 Testovací blok — k odstranění (TODO)
-
-YAML aktuálně obsahuje HW/kód, který slouží jen k testování a je označen
-`# delete later on, only for testing`:
-
-- **VL53L0X** distance senzor (I2C adresa 0x41, enable GPIO27)
-- **BME280** senzor (I2C adresa 0x76)
-- **I2C bus** (GPIO22=SDA, GPIO23=SCL) — existuje jen kvůli výše uvedeným testovacím senzorům
-
-Toto je hlavní kandidát na vyčištění ve Fázi 2 (Firmware Cleanup). Žádná část
-produkční defrost logiky na I2C senzorech nezávisí.
-
 ---
 
 ## 3. Senzory (DS18B20, 1-Wire)
@@ -146,12 +134,14 @@ oscilaci. Pokud je `main_system_enabled == false`, HEAT_MODE je vždy false.
 
 ### 4.3 DEFROST_ORDERED (binary_sensor, AND logika)
 
-Signalizuje probíhající odmrazovací cyklus venkovní jednotky. Podmínka (obě musí platit):
+Signalizuje probíhající odmrazovací cyklus venkovní jednotky. Podmínka (všechny tři musí platit):
 
 1. **Absolutní práh:** `t_evap_used ≥ def_abs_th` (default 5,0 °C)
 2. **Delta práh:** `(t_evap_used − t_outside_used) ≥ def_dt_th` (default 7,0 °C)
+3. **HEAT_MODE armed:** `bs_heat_mode` je aktivní (ochrana se nařizuje jen v topné
+   sezóně, ADR-009)
 
-Pokud je systém disabled, DEFROST_ORDERED je vždy false.
+Pokud je systém disabled nebo HEAT_MODE OFF, DEFROST_ORDERED je vždy false.
 
 ### 4.4 Defrost cyklus (scripty)
 
@@ -255,11 +245,10 @@ Všechny persistují přes `restore_value: true`.
 
 Toto jsou položky viditelné přímo z YAML — code review pravděpodobně přidá další:
 
-1. **TODO adresy senzorů** — `t_outside`/`t_evap`/`t_chassis`/`t_drain` mají placeholder
-   adresy `0x1`–`0x4`, nutno nahradit reálnými adresami při komisioningu.
-2. **Testovací I2C blok** — VL53L0X + BME280 + I2C bus, explicitně označeno "delete later".
-3. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
-4. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
+1. **TODO adresy senzorů** — `t_chassis`/`t_drain` mají placeholder adresy `0x3`/`0x4`,
+   nutno nahradit reálnými adresami při komisioningu (T1/T2 už komisionováno, S5).
+2. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
+3. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
 
 ---
 
@@ -273,3 +262,5 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.3 | 2026-07-21 | Konzistenční čištění po ADR-007: §7 bod "paralelní defrost bez sync konce" odstraněn (vyřešeno, viz §4.4), zbylé body přečíslovány; §6 tabulka `chassis_time_min`/`drain_time_min` popis změněn z "doba běhu" na "max. doba (bezpečnostní strop)". |
 | 1.4 | 2026-07-22 | §4.4 a §6 přepsány dle ADR-008 (floor + rename _time_min → _time_ceiling). S5 (Architekt). |
 | 1.5 | 2026-07-28 | §3: reálné adresy T1 (`t_outside`)/T2 (`t_evap`) komisionovány na hotovém HW (test01 bring-up), TODO odstraněno pro obě. T3/T4 zůstávají placeholder. S5 (Implementer). |
+| 1.6 | 2026-07-30 | §2.3 (Testovací blok) odstraněna — VL53L0X, BME280 a I2C bus kompletně vyřazeny z YAML (OI2, na žádost Lubora během bench testu S5). §7 bod 2 odstraněn (vyřešeno), zbylé body přečíslovány. S5 (Implementer). |
+| 1.7 | 2026-07-30 | §4.3 přepsán dle ADR-009 — DEFROST_ORDERED nově gated na HEAT_MODE (3. podmínka), OI6 vyřešeno. S7 (Implementer, doc-commit ADR-009 handoff). |

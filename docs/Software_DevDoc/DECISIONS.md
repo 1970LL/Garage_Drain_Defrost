@@ -378,4 +378,59 @@ Windows OI25/ERR8 (precedent absolutního max on-time).
 
 ---
 
-*Poslední ADR: ADR-008. Příští číslo: ADR-009.*
+### ADR-009 — DEFROST_ORDERED gated na HEAT_MODE (freeze-relevance gate)
+
+**Status:** Accepted
+**Datum:** 2026-07-30
+**Session:** S6 (Architekt)
+**Nález:** OI6 (code review S3), konkretizováno bench testem F5/regrese
+
+**Kontext:**
+
+`DEFROST_ORDERED` (bs_defrost) dnes kontroluje jen `main_system_enabled` a vlastní dva
+prahy (`def_abs_th`, `def_dt_th`); na `HEAT_MODE` (bs_heat_mode) se neptá. Bench test
+(Sim Mode): Outside = 4 °C → HEAT_MODE OFF (nad heat_off_th), Evaporator = 17 °C →
+DEFROST_ORDERED ON → oba heatery sepnou, ačkoli mráz nehrozí. Chování odpovídá kódu i
+ARCHITECTURE §4.3, není to regrese ze S5. Od ADR-008 (garantovaný floor 2/3 min) má
+spurious trigger konkrétní cenu: heater poběží nejméně floor dobu, i když je +4 °C.
+
+Fyzika: `DEFROST_ORDERED` detekuje *produkci kondenzátu* (jednotka odmrazuje), nikoli
+*riziko zamrznutí* (povrch chassis/drain u bodu mrazu). Obě podmínky jsou nezávislé a
+pro užitečnost topení musí platit obě. Navíc dynamic polling (ARCHITECTURE §3.1) už je
+na HEAT_MODE navázaný — mimo HEAT_MODE běží t_evap na 120 s, takže DEFROST_ORDERED je
+tam už dnes degradovaný.
+
+**Rozhodnutí:**
+
+`DEFROST_ORDERED` se váže na `HEAT_MODE`. Do AND podmínky bs_defrost se přidá
+`&& id(bs_heat_mode).state`. Ochrana chassis/drain se nařizuje jen v topné sezóně
+(HEAT_MODE armed) — mimo ni je DEFROST_ORDERED vždy false.
+
+Umístění gate uvnitř bs_defrost (ne na edge-triggeru run_defrost): policy na jednom
+místě; pokles HEAT_MODE během cyklu ukončí ceiling fázi přes stávající
+wait_until(!DEFROST_ORDERED). Floor (ADR-008) doběhne.
+
+**Zdůvodnění:**
+
+- Freeze protection běží jen když mráz reálně hrozí → konec plýtvání energií a opotřebení
+  SSR/kabelů mimo topnou sezónu; méně matoucí Web UI/HA.
+- Zarovnání s polling subsystémem (§3.1), který HEAT_MODE gate už předpokládá.
+- Sémantika: "ORDERED" = nařízená reakce; HEAT_MODE = freeze-relevance. Žádné přetížení.
+
+**Důsledky:**
+
+- `bs_defrost` lambda: +`&& id(bs_heat_mode).state`.
+- `ARCHITECTURE.md §4.3` — přidat 3. podmínku (HEAT_MODE armed).
+- OI6 → Done.
+- Známé omezení: HEAT_MODE prahy (2/4 °C) jsou proxy „chladno", ne měřený bod mrazu
+  povrchu; hystereze může nechat úzké pásmo 3–4 °C, kde by marginální zamrznutí bylo
+  fyzikálně možné, ale HEAT_MODE latched OFF. Přesnější per-surface gate (t_chassis/
+  t_drain ≤ th) → BACKLOG, odloženo do zimního field pozorování (viz OI-nové).
+- NaN/boot: HEAT_MODE je při NaN false → DEFROST_ORDERED false; konzistentní s
+  ALWAYS_OFF fail-safe a ADR-006 boot chováním.
+
+**Odkazy:** OI6, ADR-008, ADR-006, ARCHITECTURE §3.1/§4.3.
+
+---
+
+*Poslední ADR: ADR-009. Příští číslo: ADR-010.*

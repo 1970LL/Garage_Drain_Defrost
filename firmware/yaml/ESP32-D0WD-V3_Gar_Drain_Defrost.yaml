@@ -165,41 +165,6 @@ sensor:
                         # (was ~10 min blind window after every boot -> false T1/T2,
                         # T3/T4 error flags; now ~1 poll interval)
 
-# VL53L0X Distance Sensor (Address: 0x41, Enable: GPIO27) - delete later on, only for testing
-# *******************************************************************************************
-- platform: vl53l0x
-  name: "Distance Sensor"
-  id: distance_sensor
-  i2c_id: bus_a
-  address: 0x41
-  enable_pin: GPIO27
-  update_interval: 0.2s
-  unit_of_measurement: "m"
-  accuracy_decimals: 3
-  filters:
-    - sliding_window_moving_average:
-        window_size: 5
-        send_every: 5
-
-  # BME280 Sensor (Address: 0x76, SDO=GND)  - delete later on, only for testing
-- platform: bme280_i2c
-  address: 0x76
-  i2c_id: bus_a
-  update_interval: 5s
-  temperature:
-    name: "BME280 Temperature"
-    id: bme_temp
-#    oversampling: 2x
-  pressure:
-    name: "BME280 Barometric Pressure"
-    id: bme_pressure
-#    oversampling: 2x
-  humidity:
-    name: "BME280 Relative Humidity"
-    id: bme_humidity
-#    oversampling: 2x
-# *******************************************************************************************    
-
     # "USED" sensors: logic consumes these; they switch between real & simulated
     # values depending on Simulation Mode (switch sim_mode).
 - platform: template
@@ -349,8 +314,9 @@ binary_sensor:
 # DEFROST_ORDERED (uses EVAP (used), OUTSIDE (used) & thresholds)
 # Triggered when:
 #   1) T2 (evaporator) ≥ def_abs_th AND
-#   2) ΔT = (T2 - T1) ≥ def_dt_th
-# Both conditions required (AND logic)
+#   2) ΔT = (T2 - T1) ≥ def_dt_th AND
+#   3) HEAT_MODE is armed (ADR-009: freeze-relevance gate)
+# All three conditions required (AND logic)
 - platform: template
   name: "DEFROST_ORDERED"
   id: bs_defrost
@@ -368,7 +334,7 @@ binary_sensor:
       const float to = id(t_outside_used).state;
       const bool abs_ok = te >= id(def_abs_th).state;
       const bool dt_ok  = (te - to) >= id(def_dt_th).state;
-      return (abs_ok && dt_ok);
+      return abs_ok && dt_ok && id(bs_heat_mode).state;   // ADR-009
     }
     return {};
 
@@ -443,15 +409,6 @@ output:
   pin:
     number: GPIO2
     inverted: false
-
-# Enable/Disable Distance Sensor (GPIO27) - delete later on, only for testing
-# ********************************************************************************************
-#- platform: gpio
-#  id: vl53l0x_enable
-#  pin:
-#    number: GPIO27
-#    inverted: false
-# ********************************************************************************************
 
 # ======================== SWITCHES ========================
 switch:
@@ -704,40 +661,60 @@ interval:
 # T1 & T2 sensor validity check (update every 20 seconds)
 # Detects NaN or missing sensor responses
 # Should be fast enough for defrost logic
+#
+# BUG-004: skip evaluation for the first 10s after boot. Both this interval's
+# own first run AND each DS18B20's own first conversion are independently
+# scheduled with a random 0-5s offset after boot (ESPHome scheduler default),
+# so this check can genuinely run before T1/T2 ever published a value (default
+# sensor state is NAN until the first publish) — a false "failure" that then
+# sticks for up to 5 refresh cycles thanks to the median filter's
+# send_first_at:1/send_every:5 timing (see BUGS.md BUG-004). 10s covers the
+# worst case (5s scheduler offset + 750ms conversion + margin) and only
+# applies once, right after boot — no impact on real-fault detection speed.
 - interval: 20s
   then:
-  - lambda: |-
-      bool t1_valid = !isnan(id(t_outside).state);
-      bool t2_valid = !isnan(id(t_evap).state);
-      bool should_error = !t1_valid || !t2_valid;
+  - if:
+      condition:
+        lambda: 'return millis() >= 10000;'
+      then:
+      - lambda: |-
+          bool t1_valid = !isnan(id(t_outside).state);
+          bool t2_valid = !isnan(id(t_evap).state);
+          bool should_error = !t1_valid || !t2_valid;
 
-      if (should_error != id(err_t1_t2_fail)) {
-        id(err_t1_t2_fail) = should_error;
-        if (should_error) {
-          ESP_LOGW("error_detection", "T1/T2 sensor failure detected! T1_valid=%d, T2_valid=%d", t1_valid, t2_valid);
-        } else {
-          ESP_LOGI("error_detection", "T1/T2 sensors recovered");
-        }
-      }
+          if (should_error != id(err_t1_t2_fail)) {
+            id(err_t1_t2_fail) = should_error;
+            if (should_error) {
+              ESP_LOGW("error_detection", "T1/T2 sensor failure detected! T1_valid=%d, T2_valid=%d", t1_valid, t2_valid);
+            } else {
+              ESP_LOGI("error_detection", "T1/T2 sensors recovered");
+            }
+          }
 
 # T3 & T4 sensor validity check (update every 60 seconds)
 # Detects NaN or missing sensor responses
 # Not Critical for safety, informational only
+#
+# BUG-004: same startup-grace fix as the T1/T2 check above.
 - interval: 60s
   then:
-  - lambda: |-
-      bool t3_valid = !isnan(id(t_chassis).state);
-      bool t4_valid = !isnan(id(t_drain).state);
-      bool should_error = !t3_valid || !t4_valid;
+  - if:
+      condition:
+        lambda: 'return millis() >= 10000;'
+      then:
+      - lambda: |-
+          bool t3_valid = !isnan(id(t_chassis).state);
+          bool t4_valid = !isnan(id(t_drain).state);
+          bool should_error = !t3_valid || !t4_valid;
 
-      if (should_error != id(err_t3_t4_fail)) {
-        id(err_t3_t4_fail) = should_error;
-        if (should_error) {
-          ESP_LOGW("error_detection", "T3/T4 sensor failure detected! T3_valid=%d, T4_valid=%d", t3_valid, t4_valid);
-        } else {
-          ESP_LOGI("error_detection", "T3/T4 sensors recovered");
-        }
-      }
+          if (should_error != id(err_t3_t4_fail)) {
+            id(err_t3_t4_fail) = should_error;
+            if (should_error) {
+              ESP_LOGW("error_detection", "T3/T4 sensor failure detected! T3_valid=%d, T4_valid=%d", t3_valid, t4_valid);
+            } else {
+              ESP_LOGI("error_detection", "T3/T4 sensors recovered");
+            }
+          }
 
 # Edge trigger: start/restart defrost on rising DEFROST_ORDERED
 # Detects transition from false→true and launches defrost cycle
@@ -793,7 +770,15 @@ interval:
 # Dynamic DS18B20 polling: on-demand refresh
 # HEAT_MODE active → refresh Evaporator (T2) every 5 s (5 times interval because of median filter)
 # Allows fast defrost detection when system armed
-- interval: 1s
+#
+# BUG-003 (S5, 2026-07-30): this used to be `interval: 1s`, firing
+# component.update every second regardless of the "every 5 s" comment above —
+# far faster than the ~750ms (12-bit) DS18B20 conversion time, causing
+# overlapping convert/read cycles on the shared 1-Wire bus (checksum-invalid
+# scratch pad reads, and occasional collision-induced NaN on T1's own read).
+# Fixed by setting the interval period to actually match the stated 5 s
+# cadence, instead of hammering every tick. See BUGS.md BUG-003.
+- interval: 5s
   then:
   - if:
       condition:
@@ -803,7 +788,10 @@ interval:
 
 # Any heater ON → refresh Chassis (T3) & Drain (T4) every 20 s (5 times interval because of median filter)
 # Monitors heating performance and ensures temperature feedback
-- interval: 4s
+#
+# BUG-003 (S5, 2026-07-30): same root cause as the T2 block above — was
+# `interval: 4s` firing every tick instead of every 20 s. Fixed the same way.
+- interval: 20s
   then:
   - if:
       condition:
@@ -957,13 +945,3 @@ number:
   optimistic: true
   restore_value: true
   initial_value: 5
-
-# ===================== TESTING BLOCK - DELETE LATER =====================
-# I2C Bus Configuration (GPIO22=SDA, GPIO23=SCL, 100kHz)
-i2c:
-  - id: bus_a
-    sda: GPIO22
-    scl: GPIO23
-    frequency: 20kHz
-    scan: true
-# ===================== END OF TESTING BLOCK =====================
