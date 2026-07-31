@@ -23,10 +23,34 @@ Předběžné položky viditelné už teď z ARCHITECTURE.md §7 (technický dlu
 | OI12 | F3: DS18B20 median filtr — send_first_at: 1. ZÁVISLOST OI8/ADR-006 (ohraničuje zmeškání boot-resume). Realizováno S5 na všech 4 senzorech. **T1/T2 bench potvrzeno** (TEST_PLAN.md Fáze 4, vč. BUG-003/004 nálezů po cestě). **T3/T4 zbývá** — blokováno na OI1 (chybí fyzické senzory). | Code_review §F3, ADR-006 | 🔧 T1/T2 hotovo, T3/T4 blokováno na OI1 |
 | OI13 | F5: text_sensor "Error Status" má `update_interval: 60s`, zpožděn až 60s za instant binary_sensory. Zkrátit/odstranit interval | Code_review_20260710.md §F5 | 🔧 Implementer, nízká priorita |
 | OI14 | S1: přidat `password: !secret ap_password` do `wifi.ap` (Lubor spravuje secret), konzistentně s Windows. Bonus: `ota:` na list syntax jako Windows | Code_review_20260710.md §S1 | 🔧 Implementer |
-| OI15 | ADR-008 bod 8 (akceptované omezení): retrigger resetuje rozpočet stropu — podmínka kmitající rychleji než floor může topení protahovat neomezeně, ceiling chrání jen proti zaseknuté podmínce, ne kmitající. Řešení až při výskytu: nezávislý absolutní max on-time neresetovaný retriggerem (precedent Garage_Windows ERR8/OI25, `max_on_time_ms`). | ADR-008 bod 8 | Hardening, k pozorování v zimní sezóně |
+| OI15 | ADR-008 bod 8 (akceptované omezení): retrigger resetuje rozpočet stropu — podmínka kmitající rychleji než floor může topení protahovat neomezeně, ceiling chrání jen proti zaseknuté podmínce, ne kmitající. Řešení až při výskytu: nezávislý absolutní max on-time neresetovaný retriggerem (precedent Garage_Windows ERR8/OI25, `max_on_time_ms`). **ADR-010:** samoregulační kabel je fail-safe proti přehřátí; guard už není ochrana proti přehřátí, jen proti plýtvání energií — priorita snížena. | ADR-008 bod 8, ADR-010 | Nice-to-have (bylo: Hardening) |
 | OI16 | Per-surface freeze gate: zvážit gate topení na měřený povrch (t_chassis_used/t_drain_used ≤ th) místo/vedle HEAT_MODE proxy — přesnější, ale +entita a NaN fail-safe policy. | ADR-009 | Odloženo — po zimním field pozorování |
 | OI17 | `_used` senzory (`t_outside_used`/`t_evap_used`/`t_chassis_used`/`t_drain_used`) mají plošný `update_interval: 5s` nezávislý na HEAT_MODE/skutečné změně zdroje — re-publikují nezměněnou hodnotu i když reálný senzor pod nimi jede na 120s (HEAT_MODE OFF). Zaplevňuje log/HA traffic bez informační hodnoty. Navrhovaná oprava: event-driven refresh (`component.update` po publikaci reálného senzoru + `on_value:` na `sim_t_*` number entitách) místo plošného pollu — stejný vzor jako BUG-002 fix. Odloženo, aby nezpomalovalo probíhající bench test. | Bench test S5, 2026-07-30 | 🔧 Implementer, úklid — až po dokončení bench testu |
 | OI18 | Před field nasazením doladit celý řetězec vzorkování → filtr → publikace jako celek (ne jednotlivě): `update_interval` na raw DS18B20 senzorech, dynamic polling perioda (5s/20s), median filtr (`window_size`/`send_every`/`send_first_at`), a `_used` refresh (viz OI17) — zkontrolovat, že výsledná efektivní latence/freshness na každém místě řetězce dává smysl pohromadě, ne jen po jednotlivých článcích. | Bench test S5, 2026-07-30 | Před field nasazením |
+| OI19 | Thaw mode (nouzové rozmrazování): jednotka odstavena (ventilátor stojí, přirozená konvekce), časově neomezený běh topných kabelů pro roztání ledu při selhání prevence; detekci dokončení lze opřít o informativní čidla T3/T4. Ne provozní režim, jen nouzový fallback. Trigger realizace: dle zkušenosti z 1. zimní sezóny. | ADR-010 | Nice-to-have |
+
+### B-VALID-01 — Validace defrost detekce zimním pozorováním
+Po první zimní sezóně ověřit:
+- Délka DEFROST_ORDERED == true per cyklus: očekáváno ≤ 10 min (manuálový strop).
+  Výrazně delší → podezření na zaseknutý senzor nebo kmitající podmínku (ADR-008 bod 8).
+- Rozestup cyklů: očekáváno ≥ 31 min (manuálová Table 2, model 13k).
+  Kratší → podezření na spurious trigger.
+- Pokud data sedí → prahy def_abs_th/def_dt_th a floor hodnoty potvrzeny.
+  Pokud ne → doladit.
+
+### B-VALID-02 — Zvážit snížení *_time_ceiling po zimním ověření
+Pokud reálné cykly nepřekračují 10–12 min, stáhnout ceiling z 20 → 15 min.
+Jednotka fyzicky nepřekročí 10 min (manuálový strop). Neblokující.
+Trigger: B-VALID-01 done.
+
+### B-VALID-03 — Per-surface freeze gate (odloženo z ADR-009)
+Zvážit t_chassis ≤ th / t_drain ≤ th jako doplňkový gate DEFROST_ORDERED
+místo samotného HEAT_MODE proxy.
+Trigger: zimní pozorování ukáže falešné triggery v pásmu 2–4 °C.
+
+> ℹ️ Implementer poznámka: obsahově překrývá **OI16** (stejná myšlenka, zapsána
+> S7/ADR-009 — Architekt window o ní nevěděl, bez live přístupu k repu). Ponecháno
+> verbatim dle handoffu, ale při realizaci řešit jako jednu položku, ne dvě.
 
 ---
 
@@ -55,4 +79,4 @@ Předběžné položky viditelné už teď z ARCHITECTURE.md §7 (technický dlu
 
 ---
 
-*Last updated: 2026-07-30 (S7) — bench test dokončen, s výjimkou T3/T4 (blokováno na OI1)*
+*Last updated: 2026-07-31 (S9) — +ADR-011 (umístění čidel, t_evap→t_gas_inlet), +B-VALID-01/02/03*

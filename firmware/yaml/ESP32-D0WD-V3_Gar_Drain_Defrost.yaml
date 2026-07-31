@@ -120,11 +120,15 @@ sensor:
                         # (was ~10 min blind window after every boot -> false T1/T2,
                         # T3/T4 error flags; now ~1 poll interval)
 
-    # Toshiba Evaporator (T2)
+    # Gas Inlet Temperature (T2)
+    # ADR-011 (S9, 2026-07-31): renamed from the old "evaporator" id. Sensor sits on the gas outlet
+    # tube of the outdoor unit heat exchanger (4-way valve port C side, ⌀9.5mm),
+    # not the TE-analogous liquid/termination side the old name implied — this is
+    # the earliest physical point to detect a reverse-defrost cycle. See DECISIONS.md.
 - platform: dallas_temp
   address: 0xab030a9794259928 # commissioned S5 2026-07-28 (test01 HW bring-up)
-  name: "Evaporator Temperature"
-  id: t_evap
+  name: "Gas Inlet Temperature"
+  id: t_gas_inlet
   update_interval: 120s
   accuracy_decimals: 1
   filters:
@@ -181,16 +185,16 @@ sensor:
     }
 
 - platform: template
-  name: "Evaporator Temperature (used)"
-  id: t_evap_used
+  name: "Gas Inlet Temperature (used)"
+  id: t_gas_inlet_used
   unit_of_measurement: "°C"
   accuracy_decimals: 1
   update_interval: 5s
   lambda: |-
     if (id(sim_mode).state) {
-      return id(sim_t_evap).state;
+      return id(sim_t_gas_inlet).state;
     } else {
-      return id(t_evap).state;
+      return id(t_gas_inlet).state;
     }
 
 - platform: template
@@ -311,9 +315,9 @@ binary_sensor:
     }
     return {};
 
-# DEFROST_ORDERED (uses EVAP (used), OUTSIDE (used) & thresholds)
+# DEFROST_ORDERED (uses GAS INLET (used), OUTSIDE (used) & thresholds)
 # Triggered when:
-#   1) T2 (evaporator) ≥ def_abs_th AND
+#   1) T2 (gas inlet) ≥ def_abs_th AND
 #   2) ΔT = (T2 - T1) ≥ def_dt_th AND
 #   3) HEAT_MODE is armed (ADR-009: freeze-relevance gate)
 # All three conditions required (AND logic)
@@ -326,11 +330,11 @@ binary_sensor:
       return false;
     }
 
-    if (!isnan(id(t_evap_used).state) &&
+    if (!isnan(id(t_gas_inlet_used).state) &&
         !isnan(id(t_outside_used).state) &&
         !isnan(id(def_abs_th).state) &&
         !isnan(id(def_dt_th).state)) {
-      const float te = id(t_evap_used).state;
+      const float te = id(t_gas_inlet_used).state;
       const float to = id(t_outside_used).state;
       const bool abs_ok = te >= id(def_abs_th).state;
       const bool dt_ok  = (te - to) >= id(def_dt_th).state;
@@ -483,11 +487,11 @@ switch:
   restore_mode: DISABLED
   lambda: |-
     return id(sim_mode_state);
-  # BUG-002: t_outside_used/t_evap_used/t_chassis_used/t_drain_used each poll on
+  # BUG-002: t_outside_used/t_gas_inlet_used/t_chassis_used/t_drain_used each poll on
   # their own independent update_interval: 5s, uncoordinated with this switch or
   # each other. Toggling sim_mode without forcing a synchronized refresh leaves a
   # window (up to 5s) where some _used sensors already reflect the new mode and
-  # others still show the old one — e.g. t_evap_used stale-real (~27C) vs
+  # others still show the old one — e.g. t_gas_inlet_used stale-real (~27C) vs
   # t_outside_used fresh-sim (~5C) — which can spuriously satisfy DEFROST_ORDERED
   # and start a full defrost cycle (floor-guaranteed by ADR-008) for no real
   # reason. Force all four to update together, right after the mode flips, to
@@ -496,14 +500,14 @@ switch:
   - lambda: |-
       id(sim_mode_state) = true;
   - component.update: t_outside_used
-  - component.update: t_evap_used
+  - component.update: t_gas_inlet_used
   - component.update: t_chassis_used
   - component.update: t_drain_used
   turn_off_action:
   - lambda: |-
       id(sim_mode_state) = false;
   - component.update: t_outside_used
-  - component.update: t_evap_used
+  - component.update: t_gas_inlet_used
   - component.update: t_chassis_used
   - component.update: t_drain_used
 
@@ -679,7 +683,7 @@ interval:
       then:
       - lambda: |-
           bool t1_valid = !isnan(id(t_outside).state);
-          bool t2_valid = !isnan(id(t_evap).state);
+          bool t2_valid = !isnan(id(t_gas_inlet).state);
           bool should_error = !t1_valid || !t2_valid;
 
           if (should_error != id(err_t1_t2_fail)) {
@@ -768,7 +772,7 @@ interval:
   - output.turn_off: led_wd
 
 # Dynamic DS18B20 polling: on-demand refresh
-# HEAT_MODE active → refresh Evaporator (T2) every 5 s (5 times interval because of median filter)
+# HEAT_MODE active → refresh Gas Inlet (T2) every 5 s (5 times interval because of median filter)
 # Allows fast defrost detection when system armed
 #
 # BUG-003 (S5, 2026-07-30): this used to be `interval: 1s`, firing
@@ -784,7 +788,7 @@ interval:
       condition:
         binary_sensor.is_on: bs_heat_mode
       then:
-      - component.update: t_evap
+      - component.update: t_gas_inlet
 
 # Any heater ON → refresh Chassis (T3) & Drain (T4) every 20 s (5 times interval because of median filter)
 # Monitors heating performance and ensures temperature feedback
@@ -913,10 +917,10 @@ number:
   restore_value: true
   initial_value: 10
 
-# Manual evaporator temperature (used when sim_mode is ON)
+# Manual gas inlet temperature (used when sim_mode is ON)
 - platform: template
-  name: "Sim Evaporator (°C)"
-  id: sim_t_evap
+  name: "Sim Gas Inlet (°C)"
+  id: sim_t_gas_inlet
   min_value: -5
   max_value: 25
   step: 0.5

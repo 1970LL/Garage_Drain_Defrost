@@ -7,8 +7,8 @@
 ## S5 — 2026-07-21 až 2026-07-30 (Implementer/CC) — defrost implementace + bench test (dokončeno)
 
 > Nejdelší session dosud, přes více dnů (Lubor testoval na hotovém HW, ne breadboardu).
-> Číslování protíná S6 (Architekt, ADR-008 uprostřed) a S7 (Architekt, ADR-009
-> uprostřed) — viz oba bloky níže pro kontext.
+> Číslování protíná S6 (Architekt, ADR-008 uprostřed), S7 (Architekt, ADR-009
+> uprostřed) a S8 (Architekt, ADR-010, po uzavření bench testu) — viz bloky níže.
 
 **Provedeno:**
 - Batch 1+2 (2026-07-21): OI8 (`on_boot` no-op odstraněn, ADR-006 komentář u
@@ -77,11 +77,92 @@
   `DECISIONS.md` (+ADR-009), `ARCHITECTURE.md` (v1.7), `BACKLOG.md` (OI1/OI2/OI6/
   OI8/OI9/OI12 update, +OI15/OI16/OI17/OI18), `HANDOVER_20260730.md`
 
-**Blokující:** žádné — čeká se na pokyn k commitu (T3/T4 samo o sobě neblokuje,
-je to samostatný OI1 úkol na fyzický hardware)
-**Další session:** Commit + push celého rozsahu S5/S7 (na pokyn). Poté: OI1 (T3/T4
-fyzické senzory) až budou k dispozici; implementační session pro ADR-004 (vyžaduje
-OI10); entity rename session (ADR-005).
+**Blokující:** žádné (T3/T4 samostatný OI1 úkol na fyzický hardware, neblokuje)
+**Další session:** Commitnuto a pushnuto (`c6032fe`). Fronta: OI1 (T3/T4 fyzické
+senzory) až budou k dispozici; implementační session pro ADR-004 (vyžaduje OI10);
+entity rename session (ADR-005). Mezitím proběhly S8 (Architekt, doc-only, ADR-010
+— výběr topných kabelů) a S9 (Architekt+Implementer, ADR-011 — umístění čidel,
+rename t_evap→t_gas_inlet) — viz bloky níže.
+
+---
+
+## S9 — 2026-07-31 (Architekt → Implementer) — ADR-011: umístění čidel, t_evap→t_gas_inlet
+
+> Handoff prompt referoval sám sebe jako "Session: S7" — Architekt window k tomu
+> nemá živý přístup do SESSION_LOG.md (ADR-003) a S7 i S8 už byly obsazené (ADR-009
+> 2026-07-30, ADR-010 2026-07-30). Implementer přečísloval na **S9**, ADR-011 text
+> samotný zůstal beze změny (verbatim požadavek, vč. "Session: S7" uvnitř).
+
+**Provedeno:**
+- Reverse engineering venkovní jednotky Toshiba Shorai Edge (RAS-B13G3KVSG-E) —
+  servisní manuál + principiální schéma (`Principle_Schematic.pdf`,
+  `Defrost_Operation.pdf`) — zmapoval topologii 4-way valve reverse defrost cyklu
+  a odhalil, že původně plánovaná pozice čidla výparníku (vnější strana voštiny)
+  je fyzicky nevhodná.
+- ADR-011 — čidlo T2 přemístěno (koncepčně) na plynový vývod výměníku (trubka b,
+  Ø 9,5 mm, vývod C čtyřcestného ventilu) — nejčasnější bod detekce defrostu,
+  na rozdíl od TE-analogické pozice (trubka a), která by dávala pozdní
+  (ukončovací) signál. Čidlo T3 (chassis) umístěno na vnější stranu pánve,
+  v mezeře meandru topného kabelu.
+- Rename `t_evap` → `t_gas_inlet` proveden ve firmware YAML (id, name, lambda
+  reference, komentáře) — cascadovalo i na `t_evap_used`→`t_gas_inlet_used` a
+  `sim_t_evap`→`sim_t_gas_inlet` (validace handoffu `grep t_evap → 0 výskytů`
+  by jinak selhala na těchto odvozených id). Čistě textový rename, žádná změna
+  logiky/prahů. `esphome compile` bez chyb.
+- `ARCHITECTURE.md` §3/§3.1/§3.2/§4.3/§6 aktualizovány — přidán i popis fyzického
+  umístění T2/T3. Mimochodem opravena i stará chybná poznámka u §3.1 (tvrdila, že
+  1s/4s intervaly jsou záměr kvůli mediánovému filtru — ve skutečnosti to byl
+  BUG-003, opraveno S5 2026-07-30, ale komentář v dokumentu na to nebyl navázán).
+- `BACKLOG.md`: B-VALID-01/02/03 vloženy verbatim. B-VALID-03 (per-surface freeze
+  gate) obsahově duplicitní s existující **OI16** (ADR-009, Architekt window o ní
+  nevěděla) — okomentováno, ne sloučeno (zachování verbatim požadavku).
+
+**Výstupy:**
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (rename, zkompilováno)
+- `DECISIONS.md` (+ADR-011, patička → ADR-012), `ARCHITECTURE.md` (v1.8),
+  `BACKLOG.md` (+B-VALID-01/02/03), `SESSION_LOG.md` (tento blok)
+- **Necommitnuto** — Lubor avizoval ještě jeden zápis (nejasné zda k tomuto tématu
+  nebo novému), čeká se na pokyn.
+
+**Blokující:** žádné
+**Další session:** Commit + push (na pokyn). Fyzická montáž čidel dle ADR-011 při
+instalaci; B-VALID-01/02/03 vyhodnotit po 1. zimní sezóně.
+
+---
+
+## S8 — 2026-07-30 (Architekt) — ADR-010: topné kabely (samoregulační 10/20 W/m)
+
+> Doc-only session, žádná změna firmware/YAML. Handoff předpokládal další volné OI
+> číslo "OI17" — v BACKLOGu už bylo obsazené (OI17/OI18 vznikly týž den ve
+> společné bench-test session S5, Architekt window o nich nevěděl, viz ADR-003).
+> Implementer přečísloval novou položku na **OI19**.
+
+**Provedeno:**
+- Rozvahová session (výběr topného kabelu, ne firmware). Rešerší potvrzeno: sériové
+  konstantní kabely nelze řezat a nesmí se smotávat; samoregulační jsou řezatelné
+  a self-limiting.
+- ADR-010 — samoregulační kabel na oba okruhy: odtok 10 W/m / 7 m (DN30, spirála +
+  rezerva pro přípoj do svodu), chassis 20 W/m / ~2,5 m. Klíčová vazba: časové řízení
+  bez teplotní zpětné vazby je bezpečné jen proto, že kabel je fail-safe (self-limiting)
+  → invariant „neměnit typ kabelu bez revize řízení".
+- Field data 1. sezóny (mrzla jednotka + napojení na odpad, ne potrubí) potvrzuje
+  těžiště na chassis/junction.
+- OI15 (absolutní max-on-time guard) — priorita snížena z "Hardening" na
+  "Nice-to-have", kabel je fail-safe proti přehřátí; guard zůstává jen jako
+  pojistka proti plýtvání energií.
+- ARCHITECTURE.md nemá dedikovanou HW/BOM sekci pro topné okruhy (jen GPIO tabulka
+  DO1/DO2 = SSR výstupy) — dle handoff instrukce (Krok 3, podmíněně) vynecháno,
+  poznamenáno zde.
+
+**Výstupy:**
+- `DECISIONS.md` (+ADR-010, patička → ADR-011), `BACKLOG.md` (nová OI19 thaw mode,
+  OI15 priorita → nice-to-have), `SESSION_LOG.md` (tento blok).
+- `docs/Thermal Cable/` — datasheety (K&V srKABEL, srKABEL PRO) přiloženy Luborem,
+  commitnuty v S5/S7 rozsahu (`c6032fe`) ještě před touto session.
+
+**Blokující:** žádné
+**Další session:** Implementační dle BACKLOG (ADR-004 led_sequencer port / entity
+rename ADR-005). Finální délka chassis kabelu se potvrdí po fyzické montáži.
 
 ---
 

@@ -80,31 +80,45 @@ fakticky nesprávná; opraveno po ověření přes `esphome config` (varování 
 | ID | Název | Adresa | Účel |
 |---|---|---|---|
 | `t_outside` | Outside Temperature | `0x3400000051876f28` — komisionováno S5 (2026-07-28) | Venkovní teplota |
-| `t_evap` | Evaporator Temperature | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota výparníku (Toshiba) |
+| `t_gas_inlet` | Gas Inlet Temperature | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota plynového vývodu výměníku venkovní jednotky (T2) |
 | `t_chassis` | Chassis Temperature | `0x3` — **TODO: placeholder, nutno nahradit reálnou adresou** | Teplota šasi jednotky |
 | `t_drain` | Drain Pipe Temperature | `0x4` — **TODO** | Teplota odtokové trubky |
 
 Základní `update_interval: 120s`, filtr `median` (window 5, send_every 5).
 
+**Fyzické umístění (ADR-011, S9 2026-07-31):**
+
+- **T2 (`t_gas_inlet`):** kontaktně na trubku b — plynový vývod výměníku venkovní
+  jednotky (Toshiba Shorai Edge RAS-B13G3KVSG-E), Ø 9,5 mm, bez izolace, spojující
+  výměník s vývodem C čtyřcestného ventilu; montáž co nejblíže k tělesu výměníku.
+  Přejmenováno z `t_evap` — starý název implikoval TE-analogickou pozici (výstupní/
+  kapalinová strana, trubka a), která je fyzicky nevhodná (voština nedává přístup na
+  měděné potrubí) a navíc dává pozdní signál (ukončovací logika Toshiby, ne
+  detekční). Plynový vývod je nejčasnější bod detekce reverzního defrost cyklu.
+- **T3 (`t_chassis`):** kontaktně na vnější (spodní) stranu pánve chassis, v mezeře
+  meandru topného kabelu (ne na kabel samotný — mezera čte nejstudenější kov,
+  konzervativní ochrana). Vnější strana eliminuje kontakt s vodou/ledem.
+
 ### 3.1 Dynamic Polling Strategy
 
 Aby detekce defrostu byla rychlá, ale bus zátěž nízká:
 
-- Když je **HEAT_MODE aktivní** → `t_evap` se force-refreshuje každou 5 s (`component.update`)
+- Když je **HEAT_MODE aktivní** → `t_gas_inlet` se force-refreshuje každých 5 s (`component.update`)
 - Když je **kterýkoli heater ON** → `t_chassis` a `t_drain` se force-refreshují každých 20 s
 
-(Intervaly v kódu jsou 1s/4s smyčky kvůli mediánovému filtru — potřebují 5 vzorků, proto
-efektivní perioda 5s/20s.)
+(BUG-003, S5 2026-07-30: intervaly byly původně 1s/4s smyčky s chybným předpokladem,
+že mediánový filtr efektivní periodu sám natáhne na 5s/20s — ve skutečnosti to jen
+zbytečně bušilo do sběrnice. Opraveno na přímou periodu 5s/20s.)
 
 ### 3.2 Simulation Layer ("used" sensors)
 
 Nad reálnými senzory existuje indirection vrstva — čtyři `template` senzory
-(`t_outside_used`, `t_evap_used`, `t_chassis_used`, `t_drain_used`), které přepínají
+(`t_outside_used`, `t_gas_inlet_used`, `t_chassis_used`, `t_drain_used`), které přepínají
 mezi reálnou hodnotou a simulovanou hodnotou podle globálního přepínače `sim_mode`:
 
 ```
-sim_mode == true  → vrací sim_t_outside / sim_t_evap / sim_t_chassis / sim_t_drain
-sim_mode == false → vrací t_outside / t_evap / t_chassis / t_drain
+sim_mode == true  → vrací sim_t_outside / sim_t_gas_inlet / sim_t_chassis / sim_t_drain
+sim_mode == false → vrací t_outside / t_gas_inlet / t_chassis / t_drain
 ```
 
 **Veškerá řídicí logika (HEAT_MODE, DEFROST_ORDERED) čte výhradně z `_used` senzorů**,
@@ -136,8 +150,8 @@ oscilaci. Pokud je `main_system_enabled == false`, HEAT_MODE je vždy false.
 
 Signalizuje probíhající odmrazovací cyklus venkovní jednotky. Podmínka (všechny tři musí platit):
 
-1. **Absolutní práh:** `t_evap_used ≥ def_abs_th` (default 5,0 °C)
-2. **Delta práh:** `(t_evap_used − t_outside_used) ≥ def_dt_th` (default 7,0 °C)
+1. **Absolutní práh:** `t_gas_inlet_used ≥ def_abs_th` (default 5,0 °C)
+2. **Delta práh:** `(t_gas_inlet_used − t_outside_used) ≥ def_dt_th` (default 7,0 °C)
 3. **HEAT_MODE armed:** `bs_heat_mode` je aktivní (ochrana se nařizuje jen v topné
    sezóně, ADR-009)
 
@@ -231,13 +245,13 @@ Všechny persistují přes `restore_value: true`.
 |---|---|---|---|
 | `heat_on_th` | 2.0 °C | −20 až 10 | HEAT_MODE zapnutí |
 | `heat_off_th` | 4.0 °C | −10 až 15 | HEAT_MODE vypnutí |
-| `def_abs_th` | 5.0 °C | −10 až 30 | Defrost absolutní práh (evaporátor) |
-| `def_dt_th` | 7.0 °C | 0 až 20 | Defrost delta práh (evap − outside) |
+| `def_abs_th` | 5.0 °C | −10 až 30 | Defrost absolutní práh (gas inlet) |
+| `def_dt_th` | 7.0 °C | 0 až 20 | Defrost delta práh (gas inlet − outside) |
 | `chassis_time_floor` | 2 min | 1–10 | Garantovaná min. doba běhu chassis heateru (ADR-008) |
 | `drain_time_floor` | 3 min | 1–10 | Garantovaná min. doba běhu drain heateru (ADR-008) |
 | `chassis_time_ceiling` | 20 min | 15–60 | Max. doba běhu chassis heateru (bezpečnostní strop, ADR-007/008) |
 | `drain_time_ceiling` | 20 min | 15–60 | Max. doba běhu drain heateru (bezpečnostní strop, ADR-007/008) |
-| `sim_t_outside/evap/chassis/drain` | 10/5/5/5 °C | dle senzoru | Manuální hodnoty pro simulační režim |
+| `sim_t_outside/gas_inlet/chassis/drain` | 10/5/5/5 °C | dle senzoru | Manuální hodnoty pro simulační režim |
 
 ---
 
@@ -264,3 +278,4 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.5 | 2026-07-28 | §3: reálné adresy T1 (`t_outside`)/T2 (`t_evap`) komisionovány na hotovém HW (test01 bring-up), TODO odstraněno pro obě. T3/T4 zůstávají placeholder. S5 (Implementer). |
 | 1.6 | 2026-07-30 | §2.3 (Testovací blok) odstraněna — VL53L0X, BME280 a I2C bus kompletně vyřazeny z YAML (OI2, na žádost Lubora během bench testu S5). §7 bod 2 odstraněn (vyřešeno), zbylé body přečíslovány. S5 (Implementer). |
 | 1.7 | 2026-07-30 | §4.3 přepsán dle ADR-009 — DEFROST_ORDERED nově gated na HEAT_MODE (3. podmínka), OI6 vyřešeno. S7 (Implementer, doc-commit ADR-009 handoff). |
+| 1.8 | 2026-07-31 | §3/§3.1/§3.2/§4.3/§6: `t_evap`→`t_gas_inlet` (ADR-011, reverse-engineering Toshiba Shorai Edge servisního manuálu — starý název implikoval fyzicky nesprávnou/pozdní pozici čidla), přidán popis fyzického umístění T2/T3. Zároveň opravena stará chybná poznámka u §3.1 (1s/4s intervaly, BUG-003 — viz S5 2026-07-30). S9 (Implementer, doc-commit ADR-011 handoff). |

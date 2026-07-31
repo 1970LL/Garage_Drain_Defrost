@@ -433,4 +433,143 @@ wait_until(!DEFROST_ORDERED). Floor (ADR-008) doběhne.
 
 ---
 
-*Poslední ADR: ADR-009. Příští číslo: ADR-010.*
+### ADR-010 — Topné kabely: samoregulační, 10 W/m odtok / 20 W/m chassis
+
+**Status:** Accepted
+**Datum:** 2026-07-30
+**Session:** S8 (Architekt)
+**Podnět:** Rozvahová session — výběr topného kabelu (typ + výkon + délky).
+
+**Kontext:**
+
+Původně zvažován konstantní odporový kabel. Rešerší zjištěno, že sériové konstantní
+kabely (levné hotové sety) nelze řezat na míru a nesmí se smotávat/překrývat. Zásadní
+je ale interakce s řízením: regulace je **časová**, čidla chassis a drain jsou pouze
+informativní (drain navíc jen v jednom bodě) → topné okruhy nemají teplotní zpětnou
+vazbu. Konstantní kabel by pod 9mm PE izolací na plastu neměl žádnou ochranu proti
+přehřátí kromě časového stropu. Samoregulační kabel je řezatelný na místě a konstrukčně
+self-limiting (nepřehřeje se ani při křížení/dotyku).
+
+**Rozhodnutí:**
+
+1. Použít **samoregulační** kabel (230 V, opletené stínění → připojit na PE) na oba okruhy.
+   Volba typu: K&V thermo srKABEL (10 W/m) a srKABEL PRO (20 W/m) nebo ekvivalent.
+2. Výkon a délka:
+   - **Odtok: 10 W/m, 7 m** na trubce DN30 (rezerva pro přípoj do okapového svodu).
+   - **Chassis: 20 W/m, ~2,5 m** (finální délka dle montáže — profilované dno
+     s držáky a revizními otvory).
+3. Instalovat **maximální délku, která fyzicky sedí** — výkonová rezerva pro prevenci
+   i pro případný nouzový thaw.
+4. Řízení zůstává **časové**; delší časové stropy (ADR-008 ceiling) jsou nově bezpečné,
+   protože kabel je fail-safe.
+
+**Zdůvodnění:**
+
+- Řezatelnost na místě řeší kusé délky (7 m / ~2,5 m).
+- Self-limiting je **jediná** ochrana proti přehřátí při časovém řízení bez teplotní
+  zpětné vazby → bezpečnost pod izolací na plastu i při smotání/křížení.
+- Odtok zaizolovaný, malá ztráta (~7 W/m při −15 °C) → 10 W/m pokrývá s rezervou;
+  trubka je ve spádu, vyprazdňuje se během/krátce po defrostu → žádná stojatá voda
+  k roztání, burst-topení stačí.
+- Chassis holý plech, exponovaný větru v pergole (venkovní prostředí, ne garáž) →
+  20 W/m = max dostupná autorita; navíc dostává teplo i ze samotného defrostu jednotky.
+- Field data (1. sezóna): mrzla **jednotka a její napojení na odpad, ne vlastní
+  potrubí** — potvrzuje těžiště na chassis/junction.
+
+**Důsledky:**
+
+- **Invariant (dependency):** časové řízení je bezpečné **pouze** se samoregulačním
+  kabelem. Případný přechod na konstantní kabel by vyžadoval povinný max-on-time guard
+  (OI15) + teplotní zpětnou vazbu. Neměnit typ kabelu bez revize řízení.
+- OI15 (absolutní max-on-time guard, BACKLOG) klesá z „nutný" na „nice-to-have" — kabel
+  je fail-safe; guard zůstává jen jako pojistka proti plýtvání energií, ne proti přehřátí.
+- Elektrika: i při max délce (odtok 7 m @10 W/m ≈ 70 W ≈ 0,30 A; chassis 2,5 m @20 W/m
+  ≈ 50 W ≈ 0,22 A) zůstává proud i se studeným náběhem (~1–1,5 A na 1–2 s) hluboko pod
+  T2A (pomalá) i SSR G3MB-202 (2 A/kanál) → délka není HW-omezena.
+- **Thaw mode (rozmrazování při selhání prevence) = obsluha NOUZOVÉHO stavu, ne
+  provozní režim:** jednotka odstavena (ventilátor stojí → přirozená konvekce, příznivé
+  podmínky), čas neomezen (rozmrazení řádově hodiny je akceptovatelné). Extra délka
+  kabelu dodá výkon; delší/neomezený běh dodá čas. → BACKLOG, nice-to-have; detekci
+  dokončení lze opřít o informativní čidla.
+- **Klíčová pojistka prevence je EMPIRICKÁ:** scénář (prahy, časová okna, doběh/floor)
+  se musí odladit praktickým pozorováním v 1. sezóně. Při dobrém odladění k zamrznutí
+  nedojde; thaw mode je fallback, ne primární obrana.
+
+**Odkazy:** rozvaha 2026-07-30 (S8), ADR-007 (ceiling), ADR-008 (floor / OI15
+max-on-time), ADR-009 (HEAT_MODE gate).
+
+---
+
+### ADR-011 — Umístění teplotních čidel: výparník a chassis
+
+**Status:** Accepted
+**Datum:** 2026-07-31
+**Session:** S7 (Architekt)
+
+**Kontext:**
+
+Projekt původně předpokládal umístění čidla výparníku (t_evap, DS18B20) na vnější stranu voštiny výměníku venkovní jednotky. Reverse engineering jednotky Toshiba Shorai Edge (RAS-B13G3KVSG-E) provedený v S7 odhalil, že tato pozice je nevhodná — voština nedává přístup na měděné potrubí a tepelná vazba by byla špatná. Studiem servisního manuálu a principiálního schématu (Principle_Schematic.pdf) bylo plně zmapováno zapojení chladicího okruhu, topologie čtyřcestného ventilu a logika odmrazovacího cyklu jednotky. Čidlo chassis (t_chassis) bylo původně nespecifikováno co do strany montáže.
+
+**Defrost mechanismus venkovní jednotky Toshiba (referenční popis):**
+
+Jednotka používá 4-way valve reverse defrost: v topném režimu pracuje venkovní výměník jako výparník. Při akumulaci námrazy řídicí elektronika detekuje potřebu odmrazení přes senzor TE (Heat Exchange Temp. Sensor, CN61) a zahájí cyklus.
+
+Detekce potřeby odmrazení (tabulka zón, servisní manuál str. 40):
+Baseline TE0 a TO0 se ukládají jako minimum prvních 10–15 min topného provozu. Odmrazení se iniciuje, když teplotní pokles výměníku TE0 − TE ≥ 2–3 °C a zároveň superheat SH − SH0 ≤ 2 (zóna A/B), nebo TE ≤ −25 °C (zóna C), nebo po ≥ 90 min provozu s TE ≤ −2 °C (zóna D, časový fallback).
+
+Průběh cyklu:
+
+1. Kompresor se zastaví na ~40 s.
+2. Čtyřcestný ventil překlopí (40 s po zastavení kompresoru) — přepne výtlačný plyn z vnitřní jednotky na venkovní výměník.
+3. Ventilátor venkovní jednotky se zastaví (chlazení pouze konvekcí).
+4. Horký výtlačný plyn vstupuje plynovým vývodem výměníku (trubka b, vývod C ventilu, Ø 9,5 mm) a rozpouští námrazu na lamelách.
+5. Roztátá námraza odtéká jako kondenzát přes spodní vývod výměníku (trubka a, přes PMV, Ø 6 mm), kde sedí senzor TE.
+
+Ukončení cyklu — splněna první z podmínek:
+
+- Teplota výměníku na TE stoupne na ≥ +8 °C po dobu 3 s, nebo
+- Teplota na TE drží ≥ +7 °C po dobu 60 s, nebo
+- Cyklus trvá max. 10 min (tvrdý strop).
+
+Návrat do topení:
+
+1. Kompresor stojí ~40 s.
+2. Čtyřcestný ventil překlopí zpět (~30 s po zastavení).
+3. Venkovní ventilátor spustí s kompresorem.
+
+Typický rozestup mezi defrosty: 31–51 min (dle modelu, Table 2 manuálu; model 13k = 31 min minimum).
+
+Klíčový poznatek: senzor TE je záměrně umístěn na výstupní/kapalinové straně výměníku (trubka a) — funguje jako ukončovací indikátor (zahřeje se teprve po roztátí námrazy po celé délce výměníku). Naopak plynový vývod (trubka b, vývod C čtyřcestného ventilu) se zahřeje jako první bezprostředně po překlopení ventilu.
+
+**Rozhodnutí:**
+
+1. Čidlo výparníku — rename t_evap → t_gas_inlet:
+
+Čidlo DS18B20 se umístí kontaktně na trubku b — plynový vývod výměníku, Ø 9,5 mm, bez izolace, spojující výměník s vývodem C čtyřcestného ventilu. Montáž co nejblíže k tělesu výměníku. Uchycení hliníkovou páskou pro tepelný kontakt; doporučení — čidlo izolovat od okolního prostředí vhodnou izolací.
+
+Tato poloha poskytuje nejčasnější možnou detekci defrostu. Je fyzicky přístupná po demontáži čelního krytu vnější jednotky.
+
+Název t_evap implikuje měření na výstupní/výparníkové straně analogicky k TE. Naše čidlo záměrně sedí na plynovém vstupu — opačný konec. Rename se provede okamžitě (fáze tvorby software, žádná NVS ani entity_id zpětná závislost). Prahy def_abs_th/def_dt_th zůstávají beze změny.
+
+2. Čidlo chassis (t_chassis):
+
+DS18B20 se umístí kontaktně na vnější (spodní) stranu pánve chassis, v mezeře meandru topného kabelu (ne na samotný kabel — kabel je lokální hot spot, mezera čte nejstudenější kov = konzervativní ochrana). Přesná poloha se určí při montáži dle kritického bodu (nejnižší bod / odtokový roh). Uchycení hliníkovou páskou; doporučení — vhodná izolace od okolního vzduchu.
+
+Vnější strana eliminuje kontakt s vodou/ledem (koroze, zkreslení latentním teplem při 0 °C). Tepelný spád přes 1 mm pozinkovaného plechu je zanedbatelný (~0,003 K), informační hodnota obou stran je identická.
+
+**Zdůvodnění:**
+
+Plynový vývod (trubka b) je fyzikálně ověřený nejčasnější bod detekce reverzu; konzistentní s průběhem cyklu z manuálu a topologií venkovní jednotky ze schématu. TE-analogické umístění (trubka a) bylo explicitně zavrženo — dává pozdní signál (ukončovací logika Toshiby). Vnější strana chassis eliminuje vodní médium jako zdroj chyb bez ztráty informace.
+
+**Důsledky:**
+
+- ARCHITECTURE.md §3: aktualizovat název t_evap → t_gas_inlet, popsat fyzické umístění.
+- firmware/yaml/: rename všech výskytů t_evap / id: t_evap → t_gas_inlet; name: dle ADR-005 konvence.
+- ARCHITECTURE.md §4.3: aktualizovat název senzoru v popisu DEFROST_ORDERED.
+- BACKLOG.md: přidat B-VALID-01, B-VALID-02, B-VALID-03 (viz níže).
+
+**Odkazy:** Principle_Schematic.pdf, Defrost_Operation.pdf (servisní manuál str. 40), ADR-008, ADR-009, ADR-005.
+
+---
+
+*Poslední ADR: ADR-011. Příští číslo: ADR-012.*
