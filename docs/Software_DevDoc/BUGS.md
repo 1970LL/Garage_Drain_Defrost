@@ -46,7 +46,7 @@ bootu by edge-trigger nikdy nedetekoval rising edge, bez ohledu na senzorová da
 vrátí prázdný optional, `setup()` nezavolá žádnou akci, a zobrazovaný stav se
 odvozuje čistě z `lambda:` (která už čte správně obnovenou globální proměnnou).
 
-**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem.
+**Status:** Opraveno ve firmware YAML (S5), **bench potvrzeno** (TEST_PLAN.md Fáze 2).
 
 **Poučení (AP kandidát?):** Jakýkoli `platform: template` switch, který zrcadlí
 `restore_value: true` globál přes `lambda:` a mění ho v `turn_on_action`/
@@ -96,7 +96,8 @@ okno zúží na nulu pro přepínání přes tenhle switch (nemění dokumentova
 architekturu simulační vrstvy z ARCHITECTURE.md §3.2, jen ji dělá atomickou při
 přepnutí).
 
-**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem.
+**Status:** Opraveno ve firmware YAML (S5), **bench potvrzeno** (TEST_PLAN.md Fáze 2)
+— následně nahrazeno hlubší opravou BUG-005 (stejná symptomatika, jiný root cause).
 
 **Poučení:** Řídicí logika, která porovnává dva nezávisle pollované template
 senzory najednou (ne jen čte jeden), je zranitelná vůči podobné race condition
@@ -169,8 +170,9 @@ popsané v komentáři — `interval: 1s` → `interval: 5s` (T2 blok), `interva
 `interval: 20s` (T3/T4 blok). Žádná nová abstrakce (počítadlo ticků) není potřeba,
 komentář popisoval zamýšlené chování správně, jen implementace neodpovídala.
 
-**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem (TEST_PLAN.md
-Fáze 4).
+**Status:** Opraveno ve firmware YAML (S5), **bench potvrzeno** (TEST_PLAN.md
+Fáze 4) — fast tier hodnoty (5s/20s) později upraveny BUG-006 (T3/T4 sjednoceno
+na 5s, base interval 120s→20s), stejný fix princip.
 
 **Poučení (AP kandidát?):** `interval:` blok s podmínkou uvnitř (`if: ... then:
 component.update`) nemá žádnou vestavěnou ochranu proti tomu, aby perioda intervalu
@@ -229,7 +231,7 @@ intervalů). 10 s bezpečně pokrývá nejhorší případ (5 s scheduler offset
 konverze + rezerva) bez zpomalení detekce skutečné poruchy za běhu (grace platí jen
 jednou, hned po bootu, ne opakovaně).
 
-**Status:** Opraveno ve firmware YAML (S5), čeká na potvrzení re-testem (TEST_PLAN.md
+**Status:** Opraveno ve firmware YAML (S5), **bench potvrzeno** (TEST_PLAN.md
 Fáze 4).
 
 **Poučení (AP kandidát?):** Kombinace "publikuj hned po prvním vzorku" (`send_first_at:
@@ -243,6 +245,137 @@ error-checků nad `PollingComponent` senzory.
 
 ---
 
+### BUG-005 — Přepnutí Simulation Mode nahodile spustí oba heatery (BUG-002 fix nedovřen)
+
+**Nalezeno:** S10, 2026-07-31, bench test ADR-004 (Fáze 7, ERR LED test v reálném
+režimu, T1/T2 ~30°C reálné, T3/T4 NaN — nepřipojené)
+**Nahlásil:** Lubor
+
+**Příznak:** Přepnutí `Simulation Mode` (kterýmkoli směrem) nahodile ("chybuje
+oběma směry") spustí oba heatery, i když `HEAT_MODE`/`DEFROST_ORDERED` čtené
+z HA/dashboardu ukazují OFF. Po uplynutí floor doby (ADR-008) se heatery samy
+vypnou. Vypadá jako recidiva BUG-002, i když BUG-002 fix (synchronní
+`component.update` na všech čtyřech `_used` senzorech v `turn_on_action`/
+`turn_off_action`) je stále v kódu.
+
+**Root cause:**
+
+Log (Sim ON, 21:20:31–21:20:36) ukázal přesný mechanismus:
+
+```
+21:20:31.428  Simulation Mode Turning ON.
+21:20:31.428  Outside Temperature (used) >> 29.8 °C   ← STÁLE reálná hodnota!
+21:20:31.449  Gas Inlet Temperature (used) >> 30.2 °C ← STÁLE reálná hodnota!
+21:20:31.461  Simulation Mode >> ON                    ← publish_state až TEĎ
+21:20:35.454  Outside Temperature (used) >> 1.5 °C     ← vlastní 5s poll, sim hodnota
+21:20:35.473  HEAT_MODE >> ON
+21:20:35.497  DEFROST_ORDERED >> ON                    ← Gas Inlet ještě STALE 30.2°C!
+21:20:35.677  Heater Chassis Turning ON.
+21:20:36.309  Gas Inlet Temperature (used) >> 2.0 °C   ← až teď dorazí sim hodnota
+21:20:36.309  DEFROST_ORDERED >> OFF
+```
+
+`sim_mode` je `platform: template` switch s `optimistic: false` a `lambda:`.
+`TemplateSwitch::write_state()` (`template_switch.cpp:16-31`) při zapnutí/vypnutí
+**synchronně** spustí `turn_on_action`/`turn_off_action`, ale `publish_state()`
+zavolá jen pokud je switch `optimistic: true` — u neoptimistického switche se
+`.state` publikuje až při **příštím** `loop()` průchodu, kdy se znovu vyhodnotí
+jeho vlastní `lambda: return id(sim_mode_state);`.
+
+BUG-002 fix (`component.update:` na čtyřech `_used` senzorech) běží jako součást
+`turn_on_action`/`turn_off_action` — tedy **dřív**, než se `id(sim_mode).state`
+vůbec stihne publikovat. Jejich lambdy (`if (id(sim_mode).state) ... else ...`)
+proto v tu chvíli ještě čtou **starou** hodnotu switche → vynucený update je
+fakticky no-op (přečte znovu starý režim). Všechny čtyři `_used` senzory se pak
+vrátí na svoje nezávislé, vzájemně neseřízené 5s pollery — přesně ten samý
+mechanismus, který měl BUG-002 fix odstranit, se znovu otevře. Log to potvrzuje:
+`Outside Temperature (used)` dostane fresh sim hodnotu (1.5°C) o 4s dřív než
+`Gas Inlet Temperature (used)` (2.0°C) — během té mezery `DEFROST_ORDERED`
+vyhodnotí `abs_ok`/`dt_ok` proti STALE reálnému Gas Inlet (~30°C) vs. FRESH sim
+Outside (~1.5°C), rozdíl ~28°C hluboko nad `def_dt_th` → spurious trigger.
+Nahodilost (`chybuje oběma směry`) odpovídá tomu, který ze čtyř senzorů se
+náhodou stihne aktualizovat první.
+
+**Oprava:** Čtyři `_used` lambdy (`t_outside_used`, `t_gas_inlet_used`,
+`t_chassis_used`, `t_drain_used`) čtou místo `id(sim_mode).state` přímo globál
+`id(sim_mode_state)` — ten se nastavuje synchronně jako úplně první krok
+`turn_on_action`/`turn_off_action`, tedy dřív, než na něj kterýkoli ze čtyř
+`component.update:` volání narazí. Vynucený update tak poprvé skutečně čte NOVÝ
+režim, ne starý. Switch samotný (`sim_mode`) svoje zobrazované UI `state`
+zveřejní beze změny, jen s obvyklým jednomístným zpožděním `loop()` — na to nic
+jiného v řídicí logice není navázané.
+
+**Status:** Opraveno ve firmware YAML (S10), **bench potvrzeno** (opakované
+přepínání Simulation Mode oběma směry z reálného stavu s T1/T2 teplými, žádný
+spurious heater start).
+
+**Poučení (AP kandidát?):** `optimistic: false` `platform: template` switch
+publikuje svůj vlastní `.state` až s jednou `loop()` iterací zpoždění za
+`turn_on_action`/`turn_off_action` (protože `write_state()` volá
+`publish_state()` jen v optimistic větvi — viz `template_switch.cpp`). Kód
+spuštěný **uvnitř** téhle akce nesmí spoléhat na `id(<ten samý switch>).state`
+jako na "už platí nová hodnota" — musí číst přímo řídicí globál/proměnnou, kterou
+akce sama nastavuje. Stejný vzor (`id(main_system_enabled)` vs. hypotetický
+`id(sw_main_system_enable).state`) zkontrolovat, pokud v budoucnu přibude další
+logika uvnitř `sw_main_system_enable`'s turn_on/turn_off_action.
+
+---
+
+### BUG-006 — Selhaný senzor se v `_used`/error detekci projeví až za 10-20 minut
+
+**Nalezeno:** S10, 2026-07-31, bench test ADR-004 (Fáze 7, `err_t1` — fyzicky
+odpojen datový vodič T1)
+**Nahlásil:** Lubor
+
+**Příznak:** Po odpojení datového vodiče T1 zůstala `Outside Temperature`
+"zamrzlá" na poslední platné hodnotě (30,1 °C), nikdy nepřešla na `nan`, `err_t1`
+se nespustil. Následně stejný jev pozorován i na `Gas Inlet Temperature (used)`
+(nová platná hodnota z rawlogu se do `used` nepropsala) — vypadalo to jako
+regrese v `_used` indirection vrstvě, ale šlo o hlubší, obecnější problém.
+
+**Root cause:**
+
+Dvě věci dohromady:
+
+1. `MedianFilter::get_window_values_()` (`filter.cpp`) **explicitně přeskakuje
+   NaN hodnoty** v okně při výpočtu mediánu — publikuje medián ze zbylých
+   *platných* vzorků, dokud nejsou NaN úplně všechny (`window_size: 5`).
+   Jednotlivé/pár výpadků se tak potichu maskují zbylými dobrými vzorky.
+2. `t_outside` neměl žádné on-demand zrychlení (na rozdíl od T2/T3/T4) — běžel
+   čistě na `update_interval: 120s`. T2/T3/T4 měly zrychlení jen podmíněně
+   (HEAT_MODE/běžící heater) — mimo tenhle stav byly na stejném pomalém
+   120s základu.
+
+Kombinace: s `window_size: 5` a `send_every: 5` (stejná hodnota) filtr publikuje
+jen jednou za 5 syrových vzorků, a při 120s intervalu potřebuje **5 po sobě
+jdoucích neúspěšných čtení**, než se v okně nenajde jediná platná hodnota a
+filtr konečně publikuje `NAN` — to je `5 × 120s = 10 minut` v nejlepším případě,
+až ~20 minut, pokud odpojení nastane uprostřed 5-vzorkového cyklu. `_used`
+vrstva přitom funguje správně — věrně mirroruje `t_X.state`, jen ten sám je
+takhle pomalý.
+
+**Oprava:** Na všech čtyřech raw DS18B20 senzorech (T1-T4):
+- `update_interval` snížen ze 120s na **20s** (základní/pomalý tier)
+- on-demand zrychlení (T2 při HEAT_MODE, T3/T4 při běžícím heateru) sjednoceno
+  na **5s** (rychlý tier) — u T3/T4 to bylo dřív 20s, tedy stejně jako nový
+  základ, takže bezpředmětné; zvýšeno na 5s aby mělo smysl
+- median filtr na všech čtyřech **zakomentován** (ne smazán) — tyhle senzory
+  (venkovní/HVAC/šasi/odtok teploty) nedriftují ani nemají rázové špičky,
+  filtrace jen zpožďovala detekci selhání bez reálného přínosu. Lze vrátit
+  (odkomentovat), pokud by se ve field fázi ukázal reálný šum na čtení.
+
+**Status:** Opraveno ve firmware YAML (S10), **bench potvrzeno** (odpojen T1
+datový vodič, `err_t1` naskočil rychle, ne za 10-20 min).
+
+**Poučení (AP kandidát?):** Filtr, který explicitně ignoruje NaN při výpočtu
+výsledku (běžný a žádoucí vzor pro potlačení šumu), má vedlejší efekt: maskuje
+i *skutečné, trvalé* selhání zdroje po dobu `window_size × update_interval`.
+U pomalu se měnících, nešumících veličin (venkovní teplota apod.) filtrace
+nepřidává hodnotu a jen prodlužuje detekci poruchy — zvážit u budoucích senzorů,
+jestli filtr vůbec dává smysl, než ho přidat "pro jistotu".
+
+---
+
 ## Anti-patterny (AP-NNN)
 
 *(zatím žádné, projektově specifické — obecné AP-COM-* pro komunikaci s AI viz
@@ -250,5 +383,5 @@ WORKING_AGREEMENT.md §6)*
 
 ---
 
-*Poslední BUG: BUG-004. Příští číslo: BUG-005.*
+*Poslední BUG: BUG-006. Příští číslo: BUG-007.*
 *Poslední AP: žádný. Příští číslo: AP-001.*

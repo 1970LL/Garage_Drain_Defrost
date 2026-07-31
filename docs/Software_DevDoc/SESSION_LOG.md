@@ -4,11 +4,109 @@
 
 ---
 
+## S10 — 2026-07-31 (Implementer/CC) — ADR-004: led_sequencer, err_t1..t4 split
+
+> Nová, samostatná session (ne vnořená v S5, ta je uzavřená). Lubor: "Myslím, že
+> se můžeme vrátit k práci na software dle backlogu." Doporučeno začít OI10
+> (prerekvizita) → rovnou pokračováno implementací ADR-004 (Accepted od S2,
+> nepotřebovala nové Architekt rozhodnutí, jen realizaci).
+
+**Provedeno:**
+- **OI10** — `led_sequencer` custom komponenta zkopírována z `Garage_Windows`
+  (byte-identická, žádné project-specific hardcoding). Ověřena smoke-testem
+  (`esphome config` s `external_components:` local path) mimo produkční YAML,
+  než se do něj vůbec sáhlo.
+- **ADR-004** — `led_sequencer` naportován do produkčního YAML beze změny enginu:
+  - `external_components:` (`path: ../custom_components`, `components: [led_sequencer]`)
+  - ERR LED (GPIO2, instance `err_led_seq`): 5 patternů (`err_wifi` 1×, `err_t1`
+    2×, `err_t2` 3×, `err_t3` 4×, `err_t4` 5×, vše 300/300ms), gaps 1500/2000ms,
+    číslováno dle README pořadí (ne frequency-based). Nahradil starý blokující
+    `show_error_code` script (`delay:`-based sekvence).
+  - WD LED (GPIO4, instance `wd_led_seq`): 4 vzájemně se vylučující continuous
+    stavy (`wd_disabled`/`wd_defrost`/`wd_armed`/`wd_idle`), výběrová lambda
+    přesně dle ADR-004 (`!main → disabled; else heater_on → defrost; else
+    heat_mode → armed; else idle`). `wd_armed` pattern (2×150/150 + 900 off)
+    zakódován jako dva kroky s posledním off_ms=1050 — Step schema nepovoluje
+    on_ms=0 pro čistou "off-only" mezeru. Nahradil starý 1s heartbeat interval.
+  - Oba nové 500ms intervaly volají `set_pattern(id, bool)` — stejná konvence
+    jako Garage_Windows (přímé volání z lambdy, žádná ESPHome automation
+    action, `__init__.py` žádnou neregistruje).
+- **OI11** vyřešeno spolu s ADR-004: `err_t1_t2_fail`/`err_t3_t4_fail` (spárované
+  globals) rozděleny na `err_t1`/`err_t2`/`err_t3`/`err_t4` (nezávislé), detekce
+  přepnuta z raw senzorů na `_used` vrstvu — Simulation Mode teď netriggeruje
+  falešnou chybu na fyzicky nepřipojeném T3/T4, dokud je `sim_mode` ON. BUG-004
+  startup grace (10s) zachována beze změny na obou intervalech (20s/60s).
+  Navazující spotřebitelé (`sensor_error_status` text_sensor, individuální
+  binary_sensory, `bs_any_error`) přepsány na čtyři samostatné flagy.
+- `ARCHITECTURE.md` §2.2 a §5 přepsány (v1.9) — nová ERR/WD tabulka dle ADR-004.
+- Přidána `TEST_PLAN.md` Fáze 7 (ADR-004 ERR/WD LED). Bench test zahájen — WD LED
+  potvrzeno (všechny 4 stavy), ERR LED částečně (`err_wifi` potvrzeno).
+- Při ERR LED testu (`err_t1`/`err_t2`, Simulation Mode OFF→ON, T1/T2 reálně
+  ~30°C, T3/T4 NaN) Lubor nahlásil **BUG-005**: přepnutí Simulation Mode nahodile
+  spustilo oba heatery i s HEAT_MODE/DEFROST_ORDERED zobrazeným OFF — vypadalo
+  jako recidiva BUG-002. Root-caused z logu (přesné timestampy): BUG-002 fix
+  (`component.update` na čtyřech `_used` senzorech uvnitř `sim_mode`'s
+  turn_on/turn_off_action) běžel *dřív*, než se `id(sim_mode).state` vůbec
+  publikoval — `sim_mode` je `optimistic: false` template switch a
+  `TemplateSwitch::write_state()` (`template_switch.cpp`) volá `publish_state()`
+  jen pro optimistic switche; u neoptimistic se `.state` publikuje až na příští
+  `loop()` iteraci. Vynucený update tak četl ještě starý režim (no-op), senzory
+  se vrátily na nezávislé 5s pollery a BUG-002 mezera se znovu otevřela — log
+  ukázal `Gas Inlet Temperature (used)` stale 4s za `Outside Temperature (used)`,
+  což spurious-triggerlo DEFROST_ORDERED. Fix: čtyři `_used` lambdy čtou přímo
+  globál `sim_mode_state` (nastavený synchronně jako první krok akce) místo
+  `id(sim_mode).state`. Zkompilováno bez chyb.
+- Při testu `err_t1` (T1 datový vodič fyzicky odpojen) Lubor nahlásil **BUG-006**:
+  `Outside Temperature` zůstala "zamrzlá" na poslední hodnotě, nikdy nepřešla na
+  `nan`, `err_t1` se nespustil. Stejný jev potvrzen i na `Gas Inlet Temperature
+  (used)` mimo HEAT_MODE — Lubor se ptal, jestli `_used` vrstva vůbec dostává
+  hodnoty z čidla. Root-caused ze zdroje: `MedianFilter::get_window_values_()`
+  (`filter.cpp`) explicitně přeskakuje NaN vzorky při výpočtu mediánu —
+  jednotlivé výpadky maskuje zbylými platnými vzorky v okně (`window_size:5`).
+  Kombinace s (dřívějším) 120s `update_interval` na T1 (bez on-demand
+  zrychlení, na rozdíl od T2/T3/T4) znamenala až 10-20 minut, než selhání
+  senzoru vůbec projevilo jako `NAN`. `_used` vrstva sama funguje správně —
+  jen věrně mirroruje pomalý raw senzor. Lubor rozhodl: `update_interval`
+  120s→20s na všech 4 senzorech, rychlý on-demand tier sjednocen na 5s (T3/T4
+  měly dřív 20s, bezpředmětné po zrychlení základu), a **median filtr
+  zakomentován na všech 4 senzorech** (ne smazán — senzory nedriftují,
+  filtrace jen zpožďovala detekci poruchy; vrátit při reálném šumu ve field
+  fázi). Supersedovalo OI12 (send_first_at:1 pocházel z filtru, který teď není)
+  a OI18 (souhrnná revize vzorkovacího řetězce) — obě přesunuty do Done.
+- `esphome compile` — 0 chyb po obou opravách (Flash ~beze změny/mírně nižší po
+  odstranění filtru).
+- Po re-flashi Lubor dokončil Fázi 7 bench testem: WD LED (všechny 4 stavy),
+  ERR LED (`err_wifi`/`err_t1`/`err_t2`, sekvenční přehrávání více chyb),
+  BUG-005 fix (opakované přepínání Simulation Mode oběma směry s teplými T1/T2
+  — žádný spurious heater start) i BUG-006 fix (odpojený T1 datový vodič →
+  `err_t1` naskočil rychle, ne za 10-20 min) — **vše bench potvrzeno**.
+  `err_t3`/`err_t4` a Fáze 4 T3/T4 zůstávají — blokováno na OI1 (fyzické
+  senzory), pokračování zítra.
+- **Session uzavřena.** Bench test kompletní s výjimkou T3/T4 (jediný zbylý
+  blocker, hardware, ne software).
+
+**Výstupy:**
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` (ADR-004 + BUG-005/006
+  fixy, zkompilováno, bench potvrzeno) — commit + push na pokyn Lubora
+- `firmware/custom_components/led_sequencer/` (nové, portováno z Garage_Windows)
+- `ARCHITECTURE.md` (v1.10), `BACKLOG.md` (OI10/OI11/OI12/OI18→Done, +ADR-004
+  řádek, bench potvrzeno), `BUGS.md` (+BUG-005, +BUG-006), `TEST_PLAN.md`
+  (+Fáze 7, uzavřena), `SESSION_LOG.md` (tento blok)
+
+**Blokující:** žádné (T3/T4 samostatný OI1 úkol na fyzický hardware, neblokuje)
+**Další session:** OI1 (T3/T4 fyzické senzory) → dokončit Fázi 4 T3/T4 a Fázi 7
+`err_t3`/`err_t4`. Entity rename session (ADR-005). Implementace se vrací k
+BACKLOGu dle priority po OI1.
+
+---
+
 ## S5 — 2026-07-21 až 2026-07-30 (Implementer/CC) — defrost implementace + bench test (dokončeno)
 
 > Nejdelší session dosud, přes více dnů (Lubor testoval na hotovém HW, ne breadboardu).
 > Číslování protíná S6 (Architekt, ADR-008 uprostřed), S7 (Architekt, ADR-009
-> uprostřed) a S8 (Architekt, ADR-010, po uzavření bench testu) — viz bloky níže.
+> uprostřed), S8 (Architekt, ADR-010) a S9 (Architekt→Implementer, ADR-011) — viz
+> bloky níže. S10 (Implementer, ADR-004) je už samostatná, nová práce po uzavření
+> bench testu, ne vnořená v S5.
 
 **Provedeno:**
 - Batch 1+2 (2026-07-21): OI8 (`on_boot` no-op odstraněn, ADR-006 komentář u
@@ -79,10 +177,10 @@
 
 **Blokující:** žádné (T3/T4 samostatný OI1 úkol na fyzický hardware, neblokuje)
 **Další session:** Commitnuto a pushnuto (`c6032fe`). Fronta: OI1 (T3/T4 fyzické
-senzory) až budou k dispozici; implementační session pro ADR-004 (vyžaduje OI10);
-entity rename session (ADR-005). Mezitím proběhly S8 (Architekt, doc-only, ADR-010
-— výběr topných kabelů) a S9 (Architekt+Implementer, ADR-011 — umístění čidel,
-rename t_evap→t_gas_inlet) — viz bloky níže.
+senzory) až budou k dispozici; entity rename session (ADR-005). ADR-004
+(implementační session, vyžadovala OI10) proběhla jako **S10** — viz blok nahoře.
+Mezitím proběhly i S8 (Architekt, doc-only, ADR-010 — výběr topných kabelů) a S9
+(Architekt+Implementer, ADR-011 — umístění čidel, rename t_evap→t_gas_inlet).
 
 ---
 

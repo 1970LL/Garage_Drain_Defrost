@@ -192,11 +192,68 @@
 - [✅] Ověřit SSR spíná správně (multimetr/vizuálně) při heater ON/OFF z fází 2–3
 - [ ] Teprve po úspěšném ověření připojit reálné topné kabely
 
+## Fáze 7 — ADR-004: ERR/WD LED (`led_sequencer`)
+
+> Nové (S10, 2026-07-31). Nahrazuje starý `show_error_code` script a WD 1s
+> heartbeat interval — vizuální ověření timingu, stopkami/okem, žádné HW
+> potřeba mimo desku samotnou.
+
+**WD LED (GPIO4) — 4 vzájemně se vylučující stavy:**
+- [✅] Main Switch OFF → `wd_disabled` (100ms ON / 900ms OFF, krátký záblesk)
+- [✅] Main Switch ON, HEAT_MODE OFF, žádný heater → `wd_idle` (500/500, pomalý tep)
+- [✅] Simulation Mode: vynutit HEAT_MODE ON (Sim Outside ≤ heat_on_th), žádný
+      heater běžící → `wd_armed` (2× rychlý dvojzáblesk 150/150, pak ~900ms pauza)
+- [✅] Spustit defrost cyklus (heater ON) → `wd_defrost` (100/100, rychlý tep)
+- [✅] Ověřit přechody jsou okamžité (do ~500ms) a nikdy nejsou aktivní dva vzory
+      současně
+
+**ERR LED (GPIO2) — 5 pulzních kódů, sekvenčně při více současných chybách:**
+- [✅] Vynutit `err_wifi` (odpojit WiFi/router) → 1× pulz (300/300), pak gap
+- [✅] Vynutit `err_t1` (Simulation Mode ON, ale sledovat že se týká reálného T1 —
+      viz pozn. níže) → 2× pulz
+- [✅] Vynutit `err_t2` → 3× pulz
+- [ ] Vynutit `err_t3`/`err_t4` → 4×/5× pulz
+- [✅] Vyvolat 2+ chyby současně → přehrají se sekvenčně za sebou (gap 1500ms
+      mezi kódy, 2000ms po posledním před opakováním cyklu), ne najednou/překryté
+  > ℹ️ OI11 fix: `err_t1..t4` teď čtou `_used` vrstvu — v Simulation Mode (real
+  > sensor NaN, ale `sim_mode` ON) by se chyba **neměla** spustit. Pro vynucení
+  > `err_t1`/`err_t2` reálně je potřeba buď vypnout Simulation Mode s odpojeným
+  > senzorem, nebo dočasně odpojit T1/T2 fyzicky.
+  > 🐛 **BUG-005 nalezen zde (2026-07-31):** Při přepnutí Simulation Mode OFF→ON
+  > (T1/T2 reálně ~30°C, T3/T4 NaN) se nahodile spustily oba heatery i s
+  > HEAT_MODE/DEFROST_ORDERED zobrazeným OFF. Root cause: BUG-002 fix (synchronní
+  > `component.update` na čtyřech `_used` senzorech) běžel *dřív*, než se
+  > `id(sim_mode).state` vůbec publikoval (neoptimistic template switch —
+  > `publish_state()` až v příští `loop()`), takže vynucený update fakticky
+  > no-op a senzory se vrátily na nezávislé 5s pollery — recidiva BUG-002. Log
+  > ukázal `Outside Temperature (used)` s fresh sim hodnotou 4s dřív než `Gas
+  > Inlet Temperature (used)`, což během té mezery spurious-triggerlo
+  > `DEFROST_ORDERED`. Opraveno: čtyři `_used` lambdy čtou přímo `sim_mode_state`
+  > (globál, nastavený synchronně jako první krok akce) místo `id(sim_mode).state`.
+  > Vyžaduje re-flash. Detaily: `BUGS.md` BUG-005.
+- [✅] Po re-flashi: přepnout Simulation Mode ON→OFF→ON několikrát za sebou s T1/T2
+      teplými (real ~20-30°C) a T3/T4 NaN (nepřipojené) — ověřit, že se **ani
+      jednou** nespustí heater, pokud reálně DEFROST_ORDERED nesplňuje podmínku
+  > 🐛 **BUG-006 nalezen zde (2026-07-31):** Při testu `err_t1` (T1 datový vodič
+  > fyzicky odpojen) zůstala `Outside Temperature` "zamrzlá" na poslední hodnotě,
+  > nikdy nepřešla na `nan`, `err_t1` se nespustil. Root cause: median filtr
+  > (`filter.cpp`, `get_window_values_()`) přeskakuje NaN vzorky při výpočtu
+  > mediánu — jednotlivé výpadky maskuje zbylými platnými vzorky v okně. S
+  > `window_size:5`/`send_every:5` a (dřívějším) 120s intervalem to trvalo až
+  > 10-20 minut, než se selhání vůbec projevilo. Stejný jev potvrzen i na T2
+  > (Gas Inlet) mimo HEAT_MODE. Opraveno: `update_interval` 120s→20s na všech 4
+  > senzorech, rychlý tier sjednocen na 5s, median filtr zakomentován (senzory
+  > nedriftují). Vyžaduje re-flash. Detaily: `BUGS.md` BUG-006.
+- [✅] Po re-flashi zopakovat `err_t1` (odpojit T1 datový vodič) — ověřit, že
+      `Outside Temperature` přejde na `nan` a `err_t1` se spustí **do ~20-25s**
+      (ne 10-20 min)
+- [✅] Zkontrolovat log — žádné odkazy na starý (odstraněný) `show_error_code`
+
 ---
 
-## Výsledek session (dokončeno, s výjimkou T3/T4)
+## Výsledek session (dokončeno s výjimkou T3/T4 — pokračování zítra)
 
-**Datum testu:** 2026-07-28 až 2026-07-30
+**Datum testu:** 2026-07-28 až 2026-07-31
 **Nálezy:**
 - BUG-001 — Main System Enable / Simulation Mode se resetovaly na OFF po každém
   rebootu (default `restore_mode: ALWAYS_OFF` u template switchů). Opraveno,
@@ -209,26 +266,38 @@
   bench potvrzeno.
 - BUG-004 — timing race mezi error-checkem a první konverzí senzoru způsoboval
   falešný T1/T2 fail po bootu. Opraveno (10s startup grace), bench potvrzeno.
+- BUG-005 — přepnutí Simulation Mode nahodile spustilo oba heatery (recidiva
+  BUG-002: vynucený `component.update` běžel dřív, než se `id(sim_mode).state`
+  publikoval). Opraveno (čtení `sim_mode_state` globálu přímo), bench potvrzeno.
+- BUG-006 — median filtr maskoval selhání senzoru až 10-20 minut (NaN-skip v
+  `get_window_values_()` + pomalý 120s interval). Opraveno (`update_interval`
+  20s/5s, filtr zakomentován na všech 4 senzorech), bench potvrzeno.
 - OI6/ADR-009 — `DEFROST_ORDERED` sepnul heatery i s HEAT_MODE OFF (nalezeno
   náhodou při regresi Fáze 5). Eskalováno na Architekta, opraveno gatem na
-  HEAT_MODE, **bench potvrzeno** (Fáze 5a).
-- OI17, OI18 — zapsány jako nové backlog položky (`_used` senzory plošný 5s poll,
-  a souhrnná revize celého vzorkování/filtr/publish řetězce před field nasazením)
-  — odloženo, nezpomalovalo probíhající test.
-- Detaily bugů: `BUGS.md`. Detaily ADR-009: `DECISIONS.md`.
+  HEAT_MODE, bench potvrzeno (Fáze 5a).
+- ADR-004 — `led_sequencer` (WD 4 stavy, ERR 5 kódů) naportován, nahradil ruční
+  `show_error_code` script a WD heartbeat interval. Bench potvrzeno (Fáze 7) —
+  WD kompletně, ERR `err_wifi`/`err_t1`/`err_t2` a sekvenční přehrávání více
+  chyb. `err_t3`/`err_t4` zbývají — blokováno na OI1 (T3/T4 nepřipojené).
+- OI17 — zapsána jako backlog položka (`_used` senzory plošný 5s poll) — odloženo.
+- Detaily bugů: `BUGS.md`. Detaily ADR-004/009: `DECISIONS.md`.
 
 **Stav fází:**
 - Fáze 0–1: ✅ hotovo (HA API test odložen na po dokončení firmware — N/A, ne blokující)
 - Fáze 2 (OI8/ADR-006): ✅ bench potvrzeno, vč. BUG-001/002
 - Fáze 3 (OI9/ADR-007+008): ✅ bench potvrzeno (scénáře 3a-3d)
 - Fáze 4 (OI12): ✅ T1/T2 bench potvrzeno, vč. BUG-003/004. **T3/T4 zbývá — blokováno
-  na OI1** (chybí fyzické senzory/adresy), jediná neuzavřená část testu
+  na OI1** (chybí fyzické senzory/adresy)
 - Fáze 5 (regrese) + 5a (ADR-009): ✅ bench potvrzeno
 - Fáze 6 (reálný SSR výstup se zkušební zátěží): ✅ bench potvrzeno
+- Fáze 7 (ADR-004, ERR/WD LED): ✅ bench potvrzeno, vč. BUG-005/006. **`err_t3`/
+  `err_t4` zbývají — blokováno na OI1**, stejně jako Fáze 4 T3/T4
 
-**Závěr:** Bench test dokončen — **OK s výjimkou T3/T4** (očekávané, čeká na
-fyzické senzory, OI1). Firmware s opravami BUG-001..004 a ADR-009 zkompilovaný,
-zatím **necommitnuto**.
+**Závěr:** Bench test kompletní — **OK s výjimkou T3/T4** (očekávané, čeká na
+fyzické senzory, OI1; jediné dvě zbylé položky: Fáze 4 T3/T4 a Fáze 7
+`err_t3`/`err_t4`, obě stejný blocker). Pokračování zítra, až budou T3/T4
+k dispozici. Firmware s BUG-001..006 a ADR-004/009 zkompilovaný, jde se
+commitnout.
 
 ---
 

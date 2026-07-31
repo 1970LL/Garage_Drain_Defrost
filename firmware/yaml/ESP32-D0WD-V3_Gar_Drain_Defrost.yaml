@@ -1,13 +1,15 @@
 # ===================== GARAGE_DRAIN_DEFROST (ESP32-WROOM-32UE) =====================
 # NOTE: This version includes:
-#  1) Dynamic DS18B20 polling (base 60s, on-demand refresh 5s/20s)
+#  1) Dynamic DS18B20 polling (base 20s, on-demand fast refresh 5s; no median
+#     filter, BUG-006 — these sensors don't drift/spike)
 #  2) Simulation mode (override temperatures from UI/HA without recompiling)
 #     -> "(used)" sensors feed the logic (real vs simulated values)
 #  3) ERROR DETECTION SYSTEM with WiFi & sensor failure monitoring
 #     -> 5-minute WiFi filter (ignores brief glitches)
 #     -> Concurrent error exposure to HA
 #     -> Individual binary sensors + human-readable text status
-#     -> Error LED with pulse patterns (1x/2x/3x for each error type)
+#     -> ERR LED (ADR-004): led_sequencer, 1x-5x pulse codes (err_wifi/t1/t2/t3/t4)
+#     -> WD LED (ADR-004): led_sequencer, 4 mutually-exclusive continuous states
 # ------------------------------------------------------------------------------------
 esphome:
   name: esp-garage-drain-defrost
@@ -19,6 +21,13 @@ esp32:
   board: esp32dev
   framework:
     type: esp-idf
+
+# ADR-004: led_sequencer ported from Garage_Windows (OI10), beze změny enginu.
+external_components:
+- source:
+    type: local
+    path: ../custom_components
+  components: [led_sequencer]
 
 logger:
   level: DEBUG
@@ -63,14 +72,27 @@ globals:
   restore_value: false
   initial_value: 'false'
 
-# T1 (outside) or T2 (evaporator) sensor failure (NaN detected)
-- id: err_t1_t2_fail
+# Per-sensor NaN failure flags (ADR-004: split from paired err_t1_t2_fail/
+# err_t3_t4_fail so each ERR LED code — err_t1..err_t4 — is independently
+# addressable, and so each check can be re-pointed at the `_used` layer
+# instead of the raw sensor (OI11: Simulation Mode no longer trips a false
+# sensor-fail on physically absent T3/T4 while sim_mode is ON).
+- id: err_t1
   type: bool
   restore_value: false
   initial_value: 'false'
 
-# T3 (chassis) or T4 (drain) sensor failure (NaN detected)
-- id: err_t3_t4_fail
+- id: err_t2
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+- id: err_t3
+  type: bool
+  restore_value: false
+  initial_value: 'false'
+
+- id: err_t4
   type: bool
   restore_value: false
   initial_value: 'false'
@@ -106,71 +128,99 @@ globals:
 # ======================== SENSORS ========================
 sensor:
 # Outside Temperature (T1)
+#
+# BUG-006 (S10, 2026-07-31): median filter disabled + update_interval
+# 120s→20s on all 4 raw DS18B20 sensors. Root cause (found testing err_t1 with
+# T1's data wire physically disconnected): MedianFilter::get_window_values_()
+# (filter.cpp) explicitly SKIPS NaN entries when computing the published
+# median — a single/few bad reads get silently masked by the remaining good
+# samples still in the window. Combined with a slow/unaccelerated
+# update_interval (120s for T1 always; 120s for T2/T3/T4 whenever HEAT_MODE/
+# heater isn't currently armed), a genuinely failed sensor could take up to
+# window_size × update_interval (5 × 120s = 10 min, worst case ~20 min at a
+# window-boundary) before the published state actually turns NaN and trips
+# err_t1..t4. These sensors (outdoor/HVAC/chassis/drain temps) don't drift or
+# spike — filtering wasn't buying anything here, just delaying failure
+# detection. Re-enable (uncomment) if field data shows real read noise.
 - platform: dallas_temp
   address: 0x3400000051876f28 # commissioned S5 2026-07-28 (test01 HW bring-up)
   name: "Outside Temperature"
   id: t_outside
-  update_interval: 120s
+  update_interval: 20s
   accuracy_decimals: 1
-  filters:
-    median:
-      window_size: 5
-      send_every: 5
-      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
-                        # (was ~10 min blind window after every boot -> false T1/T2,
-                        # T3/T4 error flags; now ~1 poll interval)
+  # filters:
+  #   median:
+  #     window_size: 5
+  #     send_every: 5
+  #     send_first_at: 1
 
     # Gas Inlet Temperature (T2)
     # ADR-011 (S9, 2026-07-31): renamed from the old "evaporator" id. Sensor sits on the gas outlet
     # tube of the outdoor unit heat exchanger (4-way valve port C side, ⌀9.5mm),
     # not the TE-analogous liquid/termination side the old name implied — this is
     # the earliest physical point to detect a reverse-defrost cycle. See DECISIONS.md.
+    # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0xab030a9794259928 # commissioned S5 2026-07-28 (test01 HW bring-up)
   name: "Gas Inlet Temperature"
   id: t_gas_inlet
-  update_interval: 120s
+  update_interval: 20s
   accuracy_decimals: 1
-  filters:
-    median:
-      window_size: 5
-      send_every: 5
-      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
-                        # (was ~10 min blind window after every boot -> false T1/T2,
-                        # T3/T4 error flags; now ~1 poll interval)
+  # filters:
+  #   median:
+  #     window_size: 5
+  #     send_every: 5
+  #     send_first_at: 1
 
     # Toshiba Chassis (T3)
+    # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0x3 # TODO: replace with real address
   name: "Chassis Temperature"
   id: t_chassis
-  update_interval: 120s
+  update_interval: 20s
   accuracy_decimals: 1
-  filters:
-    median:
-      window_size: 5
-      send_every: 5
-      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
-                        # (was ~10 min blind window after every boot -> false T1/T2,
-                        # T3/T4 error flags; now ~1 poll interval)
+  # filters:
+  #   median:
+  #     window_size: 5
+  #     send_every: 5
+  #     send_first_at: 1
 
     # Drain Pipe (T4)
+    # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0x4 # TODO: replace with real address
   name: "Drain Pipe Temperature"
   id: t_drain
-  update_interval: 120s
+  update_interval: 20s
   accuracy_decimals: 1
-  filters:
-    median:
-      window_size: 5
-      send_every: 5
-      send_first_at: 1 # OI12/ADR-006: publish after 1st sample, not after full window
-                        # (was ~10 min blind window after every boot -> false T1/T2,
-                        # T3/T4 error flags; now ~1 poll interval)
+  # filters:
+  #   median:
+  #     window_size: 5
+  #     send_every: 5
+  #     send_first_at: 1
 
     # "USED" sensors: logic consumes these; they switch between real & simulated
-    # values depending on Simulation Mode (switch sim_mode).
+    # values depending on Simulation Mode.
+    #
+    # BUG-005: read the global `sim_mode_state` directly, NOT `id(sim_mode).state`
+    # (the switch's own published/derived state). `sim_mode` is `optimistic: false`
+    # with a `lambda:`, so `TemplateSwitch::write_state()` fires turn_on_action/
+    # turn_off_action SYNCHRONOUSLY but only calls `publish_state()` for optimistic
+    # switches (template_switch.cpp) — for a non-optimistic template switch,
+    # publish happens later, on the switch's own next `loop()` pass, when its
+    # lambda (`return id(sim_mode_state);`) is re-evaluated. That means the BUG-002
+    # fix's four forced `component.update:` calls (inside turn_on/turn_off_action)
+    # run BEFORE `id(sim_mode).state` reflects the new mode — they end up
+    # re-reading the OLD mode's values, a no-op, and the four `_used` sensors are
+    # left to drift back onto their own uncoordinated 5s pollers, reopening the
+    # exact stale/fresh mismatch BUG-002 fixed. `sim_mode_state` itself IS set
+    # synchronously as the very first step of turn_on/turn_off_action, before the
+    # four forced updates — reading it directly here closes the gap. Confirmed via
+    # log (2026-07-31): rising edge on Sim ON showed 'Gas Inlet Temperature (used)'
+    # still holding a stale ~30°C real reading for 5s after 'Outside Temperature
+    # (used)' had already jumped to a fresh ~1.5°C sim reading, spuriously
+    # satisfying DEFROST_ORDERED. See BUGS.md BUG-005.
 - platform: template
   name: "Outside Temperature (used)"
   id: t_outside_used
@@ -178,7 +228,7 @@ sensor:
   accuracy_decimals: 1
   update_interval: 5s
   lambda: |-
-    if (id(sim_mode).state) {
+    if (id(sim_mode_state)) {
       return id(sim_t_outside).state;
     } else {
       return id(t_outside).state;
@@ -191,7 +241,7 @@ sensor:
   accuracy_decimals: 1
   update_interval: 5s
   lambda: |-
-    if (id(sim_mode).state) {
+    if (id(sim_mode_state)) {
       return id(sim_t_gas_inlet).state;
     } else {
       return id(t_gas_inlet).state;
@@ -204,7 +254,7 @@ sensor:
   accuracy_decimals: 1
   update_interval: 5s
   lambda: |-
-    if (id(sim_mode).state) {
+    if (id(sim_mode_state)) {
       return id(sim_t_chassis).state;
     } else {
       return id(t_chassis).state;
@@ -217,7 +267,7 @@ sensor:
   accuracy_decimals: 1
   update_interval: 5s
   lambda: |-
-    if (id(sim_mode).state) {
+    if (id(sim_mode_state)) {
       return id(sim_t_drain).state;
     } else {
       return id(t_drain).state;
@@ -240,11 +290,17 @@ text_sensor:
     if (id(err_wifi_lost)) {
       active_errors.push_back("WiFi Lost");
     }
-    if (id(err_t1_t2_fail)) {
-      active_errors.push_back("T1/T2 Fail");
+    if (id(err_t1)) {
+      active_errors.push_back("T1 Fail");
     }
-    if (id(err_t3_t4_fail)) {
-      active_errors.push_back("T3/T4 Fail");
+    if (id(err_t2)) {
+      active_errors.push_back("T2 Fail");
+    }
+    if (id(err_t3)) {
+      active_errors.push_back("T3 Fail");
+    }
+    if (id(err_t4)) {
+      active_errors.push_back("T4 Fail");
     }
 
     if (!active_errors.empty()) {
@@ -351,16 +407,28 @@ binary_sensor:
   lambda: 'return id(err_wifi_lost);'
 
 - platform: template
-  name: "Error: T1 or T2 Sensor Fail"
-  id: bs_err_t1_t2
+  name: "Error: T1 Sensor Fail (Outside)"
+  id: bs_err_t1
   device_class: problem
-  lambda: 'return id(err_t1_t2_fail);'
+  lambda: 'return id(err_t1);'
 
 - platform: template
-  name: "Error: T3 or T4 Sensor Fail"
-  id: bs_err_t3_t4
+  name: "Error: T2 Sensor Fail (Gas Inlet)"
+  id: bs_err_t2
   device_class: problem
-  lambda: 'return id(err_t3_t4_fail);'
+  lambda: 'return id(err_t2);'
+
+- platform: template
+  name: "Error: T3 Sensor Fail (Chassis)"
+  id: bs_err_t3
+  device_class: problem
+  lambda: 'return id(err_t3);'
+
+- platform: template
+  name: "Error: T4 Sensor Fail (Drain)"
+  id: bs_err_t4
+  device_class: problem
+  lambda: 'return id(err_t4);'
 
 # Generic error active indicator (any error)
 - platform: template
@@ -368,7 +436,7 @@ binary_sensor:
   id: bs_any_error
   device_class: problem
   lambda: |-
-    return id(err_wifi_lost) || id(err_t1_t2_fail) || id(err_t3_t4_fail);
+    return id(err_wifi_lost) || id(err_t1) || id(err_t2) || id(err_t3) || id(err_t4);
 
 # ======================== DIGITAL OUTPUTS ========================
 output:
@@ -400,19 +468,65 @@ output:
     number: GPIO26
     inverted: false
 
-# WD LED (GPIO4) – HIGH = LED ON (watchdog heartbeat)
-- platform: gpio
-  id: led_wd
-  pin:
-    number: GPIO4
-    inverted: false
+# WD (GPIO4) and ERR (GPIO2) LEDs are driven directly by led_sequencer (ADR-004,
+# below) — it owns the GPIO via ESP-IDF driver/gpio.h, not the output: platform.
 
-# ERR LED (GPIO2) – HIGH = LED ON (strapping pin safe via BSS138)
-- platform: gpio
-  id: led_err
-  pin:
-    number: GPIO2
-    inverted: false
+# ======================== LED SEQUENCER (ADR-004) ========================
+# Ported from Garage_Windows beze změny enginu (OI10). Two instances, declarative
+# patterns, driven by `set_pattern(id, bool)` calls from the intervals below —
+# replaces the old blocking-delay show_error_code script and manual WD interval.
+led_sequencer:
+# Instance #1 — ERR LED (GPIO2), strapping pin safe via BSS138.
+# "default" mode patterns play serially when multiple are active at once
+# (F3: gaps 1500/2000ms). Declared in README error-code order (§Zdůvodnění
+# ADR-004: number by README order, not frequency like Windows ADR-010).
+- id: err_led_seq
+  output_pin: 2
+  inter_pattern_gap_ms: 1500
+  end_of_frame_gap_ms: 2000
+  patterns:
+  - id: err_wifi
+    sequence:
+    - { on_ms: 300, off_ms: 300, repeat: 1 }
+  - id: err_t1
+    sequence:
+    - { on_ms: 300, off_ms: 300, repeat: 2 }
+  - id: err_t2
+    sequence:
+    - { on_ms: 300, off_ms: 300, repeat: 3 }
+  - id: err_t3
+    sequence:
+    - { on_ms: 300, off_ms: 300, repeat: 4 }
+  - id: err_t4
+    sequence:
+    - { on_ms: 300, off_ms: 300, repeat: 5 }
+
+# Instance #2 — WD LED (GPIO4). All four states are `continuous` and mutually
+# exclusive (selector lambda below ensures exactly one is active) — priority
+# order top-to-bottom matches the engine's find_continuous_active_() scan order.
+- id: wd_led_seq
+  output_pin: 4
+  patterns:
+  - id: wd_disabled
+    mode: continuous
+    sequence:
+    - { on_ms: 100, off_ms: 900 }
+  - id: wd_defrost
+    mode: continuous
+    sequence:
+    - { on_ms: 100, off_ms: 100 }
+  - id: wd_armed
+    # 2×(150/150) then an extra 900ms off before repeating — the trailing gap
+    # is folded into the 2nd step's off_ms (150 + 900 = 1050), since a Step's
+    # on_ms must be >=1 (no bare "off-only" step in the schema).
+    mode: continuous
+    sequence:
+    - { on_ms: 150, off_ms: 150 }
+    - { on_ms: 150, off_ms: 1050 }
+  - id: wd_idle
+    mode: continuous
+    sequence:
+    - { on_ms: 500, off_ms: 500 }
 
 # ======================== SWITCHES ========================
 switch:
@@ -513,59 +627,7 @@ switch:
 
 # ======================== SCRIPTS ========================
 script:
-# Error LED controller with pulse patterns
-# Shows each active error with distinct pulse count:
-#   WiFi Lost        → 1 pulse (200ms ON, 1s OFF)
-#   T1/T2 Fail       → 2 pulses (200ms ON, 200ms OFF, repeated 2x + 1s OFF)
-#   T3/T4 Fail       → 3 pulses (200ms ON, 200ms OFF, repeated 3x + 1s OFF)
-# Multiple errors shown sequentially in 10-second cycle started by interval
-- id: show_error_code
-  mode: restart
-  then:
-  - logger.log:
-      format: "show_error_code triggered: WiFi=%d, T1/T2=%d, T3/T4=%d"
-      args: [ id(err_wifi_lost), id(err_t1_t2_fail), id(err_t3_t4_fail) ]
-
-  # Show WiFi error (1 pulse)
-  - if:
-      condition:
-        lambda: 'return id(err_wifi_lost);'
-      then:
-      - output.turn_on: led_err
-      - delay: 200ms
-      - output.turn_off: led_err
-      - delay: 1s
-
-  # Show T1/T2 error (2 pulses)
-  - if:
-      condition:
-        lambda: 'return id(err_t1_t2_fail);'
-      then:
-      - repeat:
-          count: 2
-          then:
-          - output.turn_on: led_err
-          - delay: 200ms
-          - output.turn_off: led_err
-          - delay: 200ms
-      - delay: 0.8s # gap after T1/T2 pattern
-
-  # Show T3/T4 error (3 pulses)
-  - if:
-      condition:
-        lambda: 'return id(err_t3_t4_fail);'
-      then:
-      - repeat:
-          count: 3
-          then:
-          - output.turn_on: led_err
-          - delay: 200ms
-          - output.turn_off: led_err
-          - delay: 200ms
-      - delay: 0.8s # gap after T3/T4 pattern
-  # Placeholder for next errors (if added in future)    
-
-  # Defrost sequence – starts nested scripts and waits for their completion.
+# Defrost sequence – starts nested scripts and waits for their completion.
   # Retrigger (ADR-008): a fresh DEFROST_ORDERED rising edge is NOT gated on
   # defrost_running anymore — mode: restart on all three scripts means a new
   # edge simply restarts the whole cycle (turn_on on an already-on heater is
@@ -663,7 +725,11 @@ interval:
           }
 
 # T1 & T2 sensor validity check (update every 20 seconds)
-# Detects NaN or missing sensor responses
+# Detects NaN or missing sensor responses. ADR-004/OI11: split into independent
+# err_t1/err_t2, and reads the `_used` layer (not the raw sensor) — so
+# Simulation Mode no longer trips a false fail on a physically absent/unread
+# real sensor while sim_mode is ON (real mode: `_used` mirrors raw 1:1, so
+# real-world fault detection is unchanged).
 # Should be fast enough for defrost logic
 #
 # BUG-004: skip evaluation for the first 10s after boot. Both this interval's
@@ -682,21 +748,29 @@ interval:
         lambda: 'return millis() >= 10000;'
       then:
       - lambda: |-
-          bool t1_valid = !isnan(id(t_outside).state);
-          bool t2_valid = !isnan(id(t_gas_inlet).state);
-          bool should_error = !t1_valid || !t2_valid;
+          bool new_err_t1 = isnan(id(t_outside_used).state);
+          bool new_err_t2 = isnan(id(t_gas_inlet_used).state);
 
-          if (should_error != id(err_t1_t2_fail)) {
-            id(err_t1_t2_fail) = should_error;
-            if (should_error) {
-              ESP_LOGW("error_detection", "T1/T2 sensor failure detected! T1_valid=%d, T2_valid=%d", t1_valid, t2_valid);
+          if (new_err_t1 != id(err_t1)) {
+            id(err_t1) = new_err_t1;
+            if (new_err_t1) {
+              ESP_LOGW("error_detection", "T1 (outside) sensor failure detected!");
             } else {
-              ESP_LOGI("error_detection", "T1/T2 sensors recovered");
+              ESP_LOGI("error_detection", "T1 (outside) sensor recovered");
+            }
+          }
+          if (new_err_t2 != id(err_t2)) {
+            id(err_t2) = new_err_t2;
+            if (new_err_t2) {
+              ESP_LOGW("error_detection", "T2 (gas inlet) sensor failure detected!");
+            } else {
+              ESP_LOGI("error_detection", "T2 (gas inlet) sensor recovered");
             }
           }
 
 # T3 & T4 sensor validity check (update every 60 seconds)
-# Detects NaN or missing sensor responses
+# Detects NaN or missing sensor responses. ADR-004/OI11: same split + `_used`
+# read as T1/T2 above.
 # Not Critical for safety, informational only
 #
 # BUG-004: same startup-grace fix as the T1/T2 check above.
@@ -707,16 +781,23 @@ interval:
         lambda: 'return millis() >= 10000;'
       then:
       - lambda: |-
-          bool t3_valid = !isnan(id(t_chassis).state);
-          bool t4_valid = !isnan(id(t_drain).state);
-          bool should_error = !t3_valid || !t4_valid;
+          bool new_err_t3 = isnan(id(t_chassis_used).state);
+          bool new_err_t4 = isnan(id(t_drain_used).state);
 
-          if (should_error != id(err_t3_t4_fail)) {
-            id(err_t3_t4_fail) = should_error;
-            if (should_error) {
-              ESP_LOGW("error_detection", "T3/T4 sensor failure detected! T3_valid=%d, T4_valid=%d", t3_valid, t4_valid);
+          if (new_err_t3 != id(err_t3)) {
+            id(err_t3) = new_err_t3;
+            if (new_err_t3) {
+              ESP_LOGW("error_detection", "T3 (chassis) sensor failure detected!");
             } else {
-              ESP_LOGI("error_detection", "T3/T4 sensors recovered");
+              ESP_LOGI("error_detection", "T3 (chassis) sensor recovered");
+            }
+          }
+          if (new_err_t4 != id(err_t4)) {
+            id(err_t4) = new_err_t4;
+            if (new_err_t4) {
+              ESP_LOGW("error_detection", "T4 (drain) sensor failure detected!");
+            } else {
+              ESP_LOGI("error_detection", "T4 (drain) sensor recovered");
             }
           }
 
@@ -750,38 +831,44 @@ interval:
       then:
       - script.execute: run_defrost
 
-# Error LED controller - trigger error display with pulse patterns
-# Runs every 10 seconds to show current error state
-- interval: 10s
+# ERR LED (ADR-004): evaluate all error sources every 500ms, activate/
+# deactivate led_sequencer patterns. Multiple active errors play serially
+# (engine handles the 1500/2000ms gaps, see led_sequencer: config above).
+- interval: 500ms
   then:
-  - script.execute: show_error_code
+  - lambda: |-
+      id(err_led_seq).set_pattern("err_wifi", id(err_wifi_lost));
+      id(err_led_seq).set_pattern("err_t1",   id(err_t1));
+      id(err_led_seq).set_pattern("err_t2",   id(err_t2));
+      id(err_led_seq).set_pattern("err_t3",   id(err_t3));
+      id(err_led_seq).set_pattern("err_t4",   id(err_t4));
 
-# Watchdog LED (1 Hz heartbeat)
-# Main switch ON: 500ms ON / 500ms OFF
-# Main switch OFF: 100ms ON / 900ms OFF
-- interval: 1s
+# WD LED (ADR-004): selector lambda picks exactly one continuous pattern —
+# priority: disabled > defrost > armed > idle.
+# Main switch OFF → disabled; heater running → defrost; HEAT_MODE armed with
+# no heater → armed; otherwise → idle.
+- interval: 500ms
   then:
-  - output.turn_on: led_wd
-  - if:
-      condition:
-        lambda: 'return id(main_system_enabled);'
-      then:
-      - delay: 500ms
-      else:
-      - delay: 100ms
-  - output.turn_off: led_wd
+  - lambda: |-
+      bool main_on    = id(main_system_enabled);
+      bool heater_on  = id(sw_heater_chassis).state || id(sw_heater_drain).state;
+      bool heat_armed = id(bs_heat_mode).state;
 
-# Dynamic DS18B20 polling: on-demand refresh
-# HEAT_MODE active → refresh Gas Inlet (T2) every 5 s (5 times interval because of median filter)
-# Allows fast defrost detection when system armed
+      id(wd_led_seq).set_pattern("wd_disabled", !main_on);
+      id(wd_led_seq).set_pattern("wd_defrost",  main_on && heater_on);
+      id(wd_led_seq).set_pattern("wd_armed",    main_on && !heater_on && heat_armed);
+      id(wd_led_seq).set_pattern("wd_idle",     main_on && !heater_on && !heat_armed);
+
+# Dynamic DS18B20 polling: on-demand fast refresh
+# HEAT_MODE active → refresh Gas Inlet (T2) every 5 s (base is 20s, see sensor:
+# above — this is the "fast tier" while defrost detection actually matters).
 #
 # BUG-003 (S5, 2026-07-30): this used to be `interval: 1s`, firing
-# component.update every second regardless of the "every 5 s" comment above —
-# far faster than the ~750ms (12-bit) DS18B20 conversion time, causing
-# overlapping convert/read cycles on the shared 1-Wire bus (checksum-invalid
-# scratch pad reads, and occasional collision-induced NaN on T1's own read).
-# Fixed by setting the interval period to actually match the stated 5 s
-# cadence, instead of hammering every tick. See BUGS.md BUG-003.
+# component.update every second — far faster than the ~750ms (12-bit) DS18B20
+# conversion time, causing overlapping convert/read cycles on the shared
+# 1-Wire bus (checksum-invalid scratch pad reads, occasional collision-induced
+# NaN on T1's own read). Fixed by setting the interval period to actually
+# match the stated 5 s cadence, instead of hammering every tick.
 - interval: 5s
   then:
   - if:
@@ -790,12 +877,11 @@ interval:
       then:
       - component.update: t_gas_inlet
 
-# Any heater ON → refresh Chassis (T3) & Drain (T4) every 20 s (5 times interval because of median filter)
-# Monitors heating performance and ensures temperature feedback
-#
-# BUG-003 (S5, 2026-07-30): same root cause as the T2 block above — was
-# `interval: 4s` firing every tick instead of every 20 s. Fixed the same way.
-- interval: 20s
+# Any heater ON → fast-refresh Chassis (T3) & Drain (T4) every 5 s (base is
+# 20s, see sensor: above). BUG-006 (S10, 2026-07-31): was 20s here, same as
+# the new base — redundant, so bumped to 5s to match T2's fast tier and give
+# genuinely faster feedback while heating is actually running.
+- interval: 5s
   then:
   - if:
       condition:

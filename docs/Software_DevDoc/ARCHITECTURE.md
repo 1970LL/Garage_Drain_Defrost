@@ -64,8 +64,8 @@ nový čtenář (nebo budoucí session) získal kompletní orientaci, aniž by �
 
 | Signal | GPIO | Funkce |
 |---|---|---|
-| WD | GPIO4 | Watchdog heartbeat 1 Hz — 500/500 ms (systém enabled) nebo 100/900 ms (disabled) |
-| ERR | GPIO2 | Chybové pulzní kódy, 10s cyklus (viz §5) |
+| WD | GPIO4 | 4 stavové vzory (`led_sequencer`, ADR-004) — viz §5 |
+| ERR | GPIO2 | Chybové pulzní kódy (`led_sequencer`, ADR-004) — viz §5 |
 
 ⚠ GPIO2 je strapping pin (ESP32 strapping piny: GPIO0/2/5/12/15) — bezpečné díky BSS138
 driveru. GPIO4 strapping pin **není** — původní poznámka (převzatá z README/Windows) byla
@@ -84,7 +84,8 @@ fakticky nesprávná; opraveno po ověření přes `esphome config` (varování 
 | `t_chassis` | Chassis Temperature | `0x3` — **TODO: placeholder, nutno nahradit reálnou adresou** | Teplota šasi jednotky |
 | `t_drain` | Drain Pipe Temperature | `0x4` — **TODO** | Teplota odtokové trubky |
 
-Základní `update_interval: 120s`, filtr `median` (window 5, send_every 5).
+Základní `update_interval: 20s`. **Bez median filtru** (BUG-006, S10 2026-07-31
+— zakomentován, ne smazán, viz §3.1).
 
 **Fyzické umístění (ADR-011, S9 2026-07-31):**
 
@@ -101,14 +102,26 @@ Základní `update_interval: 120s`, filtr `median` (window 5, send_every 5).
 
 ### 3.1 Dynamic Polling Strategy
 
-Aby detekce defrostu byla rychlá, ale bus zátěž nízká:
+Dvoutier: **20s základ** (všechny 4 senzory, vždy) / **5s rychlý tier** (jen
+když je aktuálně relevantní):
 
 - Když je **HEAT_MODE aktivní** → `t_gas_inlet` se force-refreshuje každých 5 s (`component.update`)
-- Když je **kterýkoli heater ON** → `t_chassis` a `t_drain` se force-refreshují každých 20 s
+- Když je **kterýkoli heater ON** → `t_chassis` a `t_drain` se force-refreshují každých 5 s
+
+`t_outside` nemá vlastní rychlý tier — je vždy relevantní (krmí HEAT_MODE
+přímo), takže 20s základ platí napořád.
 
 (BUG-003, S5 2026-07-30: intervaly byly původně 1s/4s smyčky s chybným předpokladem,
 že mediánový filtr efektivní periodu sám natáhne na 5s/20s — ve skutečnosti to jen
 zbytečně bušilo do sběrnice. Opraveno na přímou periodu 5s/20s.)
+
+**BUG-006 (S10, 2026-07-31):** median filtr (byl na všech 4 senzorech) explicitně
+přeskakoval NaN hodnoty při výpočtu mediánu — jednotlivé výpadky se maskovaly
+zbylými platnými vzorky v okně, a s `window_size:5`/`send_every:5` a (dřívějším)
+120s základem trvalo až 10-20 minut, než selhání senzoru skutečně projevilo jako
+`NAN` a spustilo `err_t1..t4`. Filtr zakomentován (tyhle senzory nedriftují),
+základ zrychlen na 20s, rychlý tier sjednocen na 5s (T3/T4 měly dřív 20s, což
+bylo po zrychlení základu bezpředmětné). Detaily: `BUGS.md` BUG-006.
 
 ### 3.2 Simulation Layer ("used" sensors)
 
@@ -217,22 +230,55 @@ Globální vypínač (`sw_main_system_enable`). Vypnutí:
 
 ## 5. Error Handling & Indikace
 
-Tři nezávislé, souběžně platné error flagy (na rozdíl od Windows tu není hierarchie
-ERR1–ERR10, jen tři ploché stavy):
+**ADR-004 (S10, 2026-07-31):** Pět nezávislých, souběžně platných error flagů —
+původní spárované `err_t1_t2_fail`/`err_t3_t4_fail` rozděleny na per-senzor
+`err_t1..err_t4` (OI11), aby měl každý svůj vlastní ERR LED kód a aby detekce
+mohla číst `_used` vrstvu místo raw senzoru (Simulation Mode už netriggeruje
+falešnou chybu na fyzicky nepřipojeném T3/T4, dokud je `sim_mode` ON):
 
 | Flag | Detekce | Debounce |
 |---|---|---|
 | `err_wifi_lost` | `wifi.connected` == false | 300 s (5 min) souvislého výpadku |
-| `err_t1_t2_fail` | `isnan()` na T1 nebo T2 | kontrola každých 20 s |
-| `err_t3_t4_fail` | `isnan()` na T3 nebo T4 | kontrola každých 60 s, informativní (ne kritické) |
+| `err_t1` | `isnan()` na `t_outside_used` | kontrola každých 20 s |
+| `err_t2` | `isnan()` na `t_gas_inlet_used` | kontrola každých 20 s |
+| `err_t3` | `isnan()` na `t_chassis_used` | kontrola každých 60 s, informativní (ne kritické) |
+| `err_t4` | `isnan()` na `t_drain_used` | kontrola každých 60 s, informativní (ne kritické) |
 
-**ERR LED** (`show_error_code` script, spouštěný intervalem 10s): sekvenčně přehraje pulzní
-patterny pro každou aktivní chybu — WiFi 1 pulz, T1/T2 2 pulzy, T3/T4 3 pulzy — s mezerami
-mezi patterny. Více chyb současně = zobrazí se všechny za sebou v jednom 10s cyklu.
+Obě kontroly mají 10s startup grace po bootu (BUG-004).
+
+**ERR LED (GPIO2)** — `led_sequencer` (ADR-004, portováno z Garage_Windows beze
+změny enginu, OI10), instance `err_led_seq`. Deklarativní patterny, "default"
+mode — víc aktivních chyb se přehraje sekvenčně (gaps 1500/2000 ms), pořadí dle
+README/tabulky (ne frequency-based jako Windows ADR-010):
+
+| Kód | Chyba | Pattern |
+|---|---|---|
+| `err_wifi` | WiFi lost | 1×(300/300) |
+| `err_t1` | T1 outside fail | 2×(300/300) |
+| `err_t2` | T2 gas inlet fail | 3×(300/300) |
+| `err_t3` | T3 chassis fail | 4×(300/300) |
+| `err_t4` | T4 drain fail | 5×(300/300) |
+
+Interval (500 ms) volá `set_pattern(id, bool)` pro všech pět kódů — engine si
+sám drží, které patterny jsou aktivní a přehrává je v kole.
+
+**WD LED (GPIO4)** — `led_sequencer` instance `wd_led_seq`, čtyři vzájemně se
+vylučující `continuous` stavy (jen jeden aktivní, priorita shora):
+
+| Stav | Podmínka | Pattern |
+|---|---|---|
+| `wd_disabled` | MAIN_SWITCH off | 100/900 continuous |
+| `wd_defrost` | kterýkoli heater ON | 100/100 continuous |
+| `wd_armed` | HEAT_MODE on, žádný heater | 2×(150/150)+900 off continuous |
+| `wd_idle` | enabled, HEAT_MODE off | 500/500 continuous |
+
+Výběrová lambda (500 ms interval): `!main → disabled; else heater_on → defrost;
+else heat_mode → armed; else idle`.
 
 **HA-facing:**
-- `bs_err_wifi_lost`, `bs_err_t1_t2`, `bs_err_t3_t4` — jednotlivé binary_sensory (device_class: problem)
-- `bs_any_error` — souhrnný OR všech tří
+- `bs_err_wifi_lost`, `bs_err_t1`, `bs_err_t2`, `bs_err_t3`, `bs_err_t4` —
+  jednotlivé binary_sensory (device_class: problem)
+- `bs_any_error` — souhrnný OR všech pěti
 - `sensor_error_status` (text_sensor) — čitelný comma-separated seznam aktivních chyb ("OK" když žádná)
 
 ---
@@ -279,3 +325,5 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.6 | 2026-07-30 | §2.3 (Testovací blok) odstraněna — VL53L0X, BME280 a I2C bus kompletně vyřazeny z YAML (OI2, na žádost Lubora během bench testu S5). §7 bod 2 odstraněn (vyřešeno), zbylé body přečíslovány. S5 (Implementer). |
 | 1.7 | 2026-07-30 | §4.3 přepsán dle ADR-009 — DEFROST_ORDERED nově gated na HEAT_MODE (3. podmínka), OI6 vyřešeno. S7 (Implementer, doc-commit ADR-009 handoff). |
 | 1.8 | 2026-07-31 | §3/§3.1/§3.2/§4.3/§6: `t_evap`→`t_gas_inlet` (ADR-011, reverse-engineering Toshiba Shorai Edge servisního manuálu — starý název implikoval fyzicky nesprávnou/pozdní pozici čidla), přidán popis fyzického umístění T2/T3. Zároveň opravena stará chybná poznámka u §3.1 (1s/4s intervaly, BUG-003 — viz S5 2026-07-30). S9 (Implementer, doc-commit ADR-011 handoff). |
+| 1.9 | 2026-07-31 | §2.2/§5 přepsány dle ADR-004 — `led_sequencer` portován (OI10), nahradil ruční `show_error_code` script a WD 1s heartbeat interval; `err_t1_t2_fail`/`err_t3_t4_fail` rozděleny na per-senzor `err_t1..err_t4` čtoucí `_used` vrstvu (OI11 vyřešeno). S10 (Implementer). |
+| 1.10 | 2026-07-31 | §3/§3.1 přepsány dle BUG-006 — median filtr zakomentován na všech 4 DS18B20 senzorech (maskoval selhání senzoru až 10-20 min), základní `update_interval` 120s→20s, rychlý tier sjednocen na 5s (T3/T4 z dřívějších 20s). S10 (Implementer). |
