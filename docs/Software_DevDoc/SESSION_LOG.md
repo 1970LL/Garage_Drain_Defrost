@@ -4,6 +4,48 @@
 
 ---
 
+## S11 — 2026-08-01 (Implementer/CC) — OI1: T3/T4 komisioning
+
+> Lubor: "Nová čidla: T3 - Outdoor unit chassis 0xa90625910004ba28 (DS18B20),
+> T4 - Drain Pipe 0xb6062591abac6f28 (DS18B20). Zanes adresy čidel do
+> dokumentace a uprav YAML." Stejný postup jako T1/T2 v S5 (`test01.yaml`
+> bring-up, adresy přečtené z bootlogu).
+
+**Provedeno:**
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`: `t_chassis` (T3)
+  `address:` `0x3`→`0xa90625910004ba28`, `t_drain` (T4) `address:` `0x4`→
+  `0xb6062591abac6f28`. TODO komentáře nahrazeny komisioning poznámkou
+  (konzistentně s T1/T2 stylem ze S5).
+- `esphome config` — validní, 0 chyb.
+- `ARCHITECTURE.md` (v1.11): §3 tabulka doplněna o reálné adresy T3/T4, §7
+  bod "TODO adresy senzorů" odstraněn (zcela vyřešeno).
+- `BACKLOG.md`: OI1 přesunuto z Aktivní do Done (T1/T2 S5 + T3/T4 S11).
+- Lubor dokončil `TEST_PLAN.md` Fázi 4 (T3/T4 warm-up) a Fázi 7 (`err_t3`/
+  `err_t4` pulzní kódy 4×/5×) bench testem — obě potvrzeny ✅. Bench test
+  (S5–S11) je tímto **kompletně uzavřen**, žádný zbylý blocker.
+- Následně probrán **dynamic polling** dotaz: potvrzeno chování (T1 vždy 20s;
+  T2 5s kdykoli HEAT_MODE ON; T3/T4 5s jen během reálného běhu heateru, ne
+  jen HEAT_MODE armed; `_used` vrstva vždy 5s napevno) s jedním upřesněním
+  oproti Luborovu popisu (T3/T4 fast-tier je gated na heater running, ne na
+  HEAT_MODE samotném).
+- Lubor navrhl myšlenku: sladit `_used` vrstvu na stejný polling jako raw
+  senzory místo plošných 5s. Zhodnoceno (bez implementace): mirror-schedule
+  by mělo dvě slabiny (možný stejný-tick staleness, zpomalení Simulation Mode
+  odezvy bez if/else větve navíc). Doporučen event-driven přístup (`on_value:`
+  na raw senzorech + na `sim_t_*` number entitách) — to je přesně **OI17**,
+  ne nová položka. Lubor souhlasil pokračovat systematicky dle BACKLOGu.
+- Dohodnuté pořadí další práce: (1) uzavřít S11 doc-wise [toto], (2) OI17 +
+  OI4 (event-driven `_used` refresh + přehodnocení 60s error-check intervalu),
+  (3) OI13 + OI14 (drobný úklid), (4) ADR-005 execution (entity rename,
+  samostatná session), (5) OI7 před Field Deployment, (6) OI15/16/19 a
+  B-VALID-01/02/03 odloženy na zimní pozorování, (7) fyzická montáž (mimo
+  software).
+
+**Session S11 uzavřena.** Bench test (S5–S11) kompletní, žádný zbylý blocker.
+Další session: OI17 + OI4.
+
+---
+
 ## S10 — 2026-07-31 (Implementer/CC) — ADR-004: led_sequencer, err_t1..t4 split
 
 > Nová, samostatná session (ne vnořená v S5, ta je uzavřená). Lubor: "Myslím, že

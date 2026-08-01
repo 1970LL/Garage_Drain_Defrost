@@ -175,7 +175,7 @@ sensor:
     # Toshiba Chassis (T3)
     # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
-  address: 0x3 # TODO: replace with real address
+  address: 0xa90625910004ba28 # commissioned S11 2026-08-01 (test01 HW bring-up)
   name: "Chassis Temperature"
   id: t_chassis
   update_interval: 20s
@@ -189,7 +189,7 @@ sensor:
     # Drain Pipe (T4)
     # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
-  address: 0x4 # TODO: replace with real address
+  address: 0xb6062591abac6f28 # commissioned S11 2026-08-01 (test01 HW bring-up)
   name: "Drain Pipe Temperature"
   id: t_drain
   update_interval: 20s

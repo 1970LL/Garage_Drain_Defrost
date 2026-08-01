@@ -81,8 +81,8 @@ fakticky nesprávná; opraveno po ověření přes `esphome config` (varování 
 |---|---|---|---|
 | `t_outside` | Outside Temperature | `0x3400000051876f28` — komisionováno S5 (2026-07-28) | Venkovní teplota |
 | `t_gas_inlet` | Gas Inlet Temperature | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota plynového vývodu výměníku venkovní jednotky (T2) |
-| `t_chassis` | Chassis Temperature | `0x3` — **TODO: placeholder, nutno nahradit reálnou adresou** | Teplota šasi jednotky |
-| `t_drain` | Drain Pipe Temperature | `0x4` — **TODO** | Teplota odtokové trubky |
+| `t_chassis` | Chassis Temperature | `0xa90625910004ba28` — komisionováno S11 (2026-08-01) | Teplota šasi jednotky |
+| `t_drain` | Drain Pipe Temperature | `0xb6062591abac6f28` — komisionováno S11 (2026-08-01) | Teplota odtokové trubky |
 
 Základní `update_interval: 20s`. **Bez median filtru** (BUG-006, S10 2026-07-31
 — zakomentován, ne smazán, viz §3.1).
@@ -305,10 +305,8 @@ Všechny persistují přes `restore_value: true`.
 
 Toto jsou položky viditelné přímo z YAML — code review pravděpodobně přidá další:
 
-1. **TODO adresy senzorů** — `t_chassis`/`t_drain` mají placeholder adresy `0x3`/`0x4`,
-   nutno nahradit reálnými adresami při komisioningu (T1/T2 už komisionováno, S5).
-2. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
-3. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
+1. **DI1/DI2 jsou "Reserved"** — nevyužité vstupy, jen logují press/release, bez funkce.
+2. **DO3/DO4 jsou "Reserved"** — nevyužité výstupy (interní, skryté z HA).
 
 ---
 
@@ -327,3 +325,4 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.8 | 2026-07-31 | §3/§3.1/§3.2/§4.3/§6: `t_evap`→`t_gas_inlet` (ADR-011, reverse-engineering Toshiba Shorai Edge servisního manuálu — starý název implikoval fyzicky nesprávnou/pozdní pozici čidla), přidán popis fyzického umístění T2/T3. Zároveň opravena stará chybná poznámka u §3.1 (1s/4s intervaly, BUG-003 — viz S5 2026-07-30). S9 (Implementer, doc-commit ADR-011 handoff). |
 | 1.9 | 2026-07-31 | §2.2/§5 přepsány dle ADR-004 — `led_sequencer` portován (OI10), nahradil ruční `show_error_code` script a WD 1s heartbeat interval; `err_t1_t2_fail`/`err_t3_t4_fail` rozděleny na per-senzor `err_t1..err_t4` čtoucí `_used` vrstvu (OI11 vyřešeno). S10 (Implementer). |
 | 1.10 | 2026-07-31 | §3/§3.1 přepsány dle BUG-006 — median filtr zakomentován na všech 4 DS18B20 senzorech (maskoval selhání senzoru až 10-20 min), základní `update_interval` 120s→20s, rychlý tier sjednocen na 5s (T3/T4 z dřívějších 20s). S10 (Implementer). |
+| 1.11 | 2026-08-01 | §3/§7: reálné adresy T3 (`t_chassis`) = `0xa90625910004ba28`, T4 (`t_drain`) = `0xb6062591abac6f28` komisionovány na hotovém HW (test01 bring-up), TODO/placeholder odstraněno pro obě — OI1 kompletně vyřešeno. S11 (Implementer). |

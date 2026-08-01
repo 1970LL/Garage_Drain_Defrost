@@ -122,9 +122,10 @@
 
 ## Fáze 4 — OI12: Sensor warm-up window
 
-> **Částečně odblokováno (S5, 2026-07-28):** T1/T2 mají reálné adresy (test01 HW
-> bring-up), takže tahle část je teď testovatelná na reálném HW. T3/T4 zůstávají
-> placeholder — čekají na fyzické senzory, ta část zůstává blokovaná na OI1.
+> **Plně odblokováno (S11, 2026-08-01):** T1/T2 mají reálné adresy od S5
+> (2026-07-28, test01 HW bring-up). T3/T4 nyní také mají reálné adresy (S11,
+> test01 HW bring-up: T3=`0xa90625910004ba28`, T4=`0xb6062591abac6f28`) — OI1
+> kompletně vyřešeno, tahle část je teď testovatelná na reálném HW.
 
 **T1/T2 (testovatelné teď):**
 - [✅] Po rebootu sledovat log/HA — "Outside Temperature" (T1) a "Evaporator
@@ -149,10 +150,11 @@
   > před vyhodnocením obou error-checků (T1/T2 i T3/T4) — vyžaduje re-flash a
   > opakování tohoto kroku od začátku. Detaily: `BUGS.md` BUG-004.
 
-**T3/T4 (blokováno na OI1 — chybí fyzické senzory/adresy):**
-- [ ] (Po OI1) Po rebootu sledovat log/HA — "Chassis Temperature" (T3) a "Drain Pipe
+**T3/T4 (testovatelné teď, S11):**
+- [✅] Po rebootu sledovat log/HA — "Chassis Temperature" (T3) a "Drain Pipe
       Temperature" (T4) by měly přestat být `unavailable` do ~1 poll intervalu
-- [ ] (Po OI1) Ověřit, že `err_t3_t4_fail` se po bootu nespustí falešně
+- [✅] Ověřit, že `err_t3`/`err_t4` se po bootu **nespustí falešně** (žádné zbytečné
+      ERR LED pulzy hned po startu)
 
 ## Fáze 5 — Regrese (sousední systémy nedotčené touto session)
 
@@ -212,7 +214,7 @@
 - [✅] Vynutit `err_t1` (Simulation Mode ON, ale sledovat že se týká reálného T1 —
       viz pozn. níže) → 2× pulz
 - [✅] Vynutit `err_t2` → 3× pulz
-- [ ] Vynutit `err_t3`/`err_t4` → 4×/5× pulz
+- [✅] Vynutit `err_t3`/`err_t4` → 4×/5× pulz
 - [✅] Vyvolat 2+ chyby současně → přehrají se sekvenčně za sebou (gap 1500ms
       mezi kódy, 2000ms po posledním před opakováním cyklu), ne najednou/překryté
   > ℹ️ OI11 fix: `err_t1..t4` teď čtou `_used` vrstvu — v Simulation Mode (real
@@ -251,7 +253,7 @@
 
 ---
 
-## Výsledek session (dokončeno s výjimkou T3/T4 — pokračování zítra)
+## Výsledek session (S5–S11, kompletní vč. T3/T4)
 
 **Datum testu:** 2026-07-28 až 2026-07-31
 **Nálezy:**
@@ -276,28 +278,32 @@
   náhodou při regresi Fáze 5). Eskalováno na Architekta, opraveno gatem na
   HEAT_MODE, bench potvrzeno (Fáze 5a).
 - ADR-004 — `led_sequencer` (WD 4 stavy, ERR 5 kódů) naportován, nahradil ruční
-  `show_error_code` script a WD heartbeat interval. Bench potvrzeno (Fáze 7) —
-  WD kompletně, ERR `err_wifi`/`err_t1`/`err_t2` a sekvenční přehrávání více
-  chyb. `err_t3`/`err_t4` zbývají — blokováno na OI1 (T3/T4 nepřipojené).
-- OI17 — zapsána jako backlog položka (`_used` senzory plošný 5s poll) — odloženo.
+  `show_error_code` script a WD heartbeat interval. Bench potvrzeno **kompletně**
+  (Fáze 7) — WD 4 stavy, ERR všech 5 kódů (`err_wifi`/`err_t1`/`err_t2`/`err_t3`/
+  `err_t4`) vč. sekvenčního přehrávání více chyb najednou.
+- OI17 — zapsána jako backlog položka (`_used` senzory plošný 5s poll) — probrána
+  s Luborem 2026-08-01, dohodnut event-driven refresh přístup, realizace
+  navazující session.
 - Detaily bugů: `BUGS.md`. Detaily ADR-004/009: `DECISIONS.md`.
 
 **Stav fází:**
 - Fáze 0–1: ✅ hotovo (HA API test odložen na po dokončení firmware — N/A, ne blokující)
 - Fáze 2 (OI8/ADR-006): ✅ bench potvrzeno, vč. BUG-001/002
 - Fáze 3 (OI9/ADR-007+008): ✅ bench potvrzeno (scénáře 3a-3d)
-- Fáze 4 (OI12): ✅ T1/T2 bench potvrzeno, vč. BUG-003/004. **T3/T4 zbývá — blokováno
-  na OI1** (chybí fyzické senzory/adresy)
+- Fáze 4 (OI12): ✅ bench potvrzeno kompletně, T1-T4, vč. BUG-003/004
 - Fáze 5 (regrese) + 5a (ADR-009): ✅ bench potvrzeno
 - Fáze 6 (reálný SSR výstup se zkušební zátěží): ✅ bench potvrzeno
-- Fáze 7 (ADR-004, ERR/WD LED): ✅ bench potvrzeno, vč. BUG-005/006. **`err_t3`/
-  `err_t4` zbývají — blokováno na OI1**, stejně jako Fáze 4 T3/T4
+- Fáze 7 (ADR-004, ERR/WD LED): ✅ bench potvrzeno kompletně, všech 5 ERR kódů
+  vč. `err_t3`/`err_t4`, vč. BUG-005/006
 
-**Závěr:** Bench test kompletní — **OK s výjimkou T3/T4** (očekávané, čeká na
-fyzické senzory, OI1; jediné dvě zbylé položky: Fáze 4 T3/T4 a Fáze 7
-`err_t3`/`err_t4`, obě stejný blocker). Pokračování zítra, až budou T3/T4
-k dispozici. Firmware s BUG-001..006 a ADR-004/009 zkompilovaný, jde se
-commitnout.
+**Závěr:** Bench test **kompletně dokončen** (S5–S11) — všechny fáze ✅, žádný
+zbylý blocker. OI1 vyřešeno (T1-T4 reálné adresy, S5+S11). Firmware s
+BUG-001..006 a ADR-004/009 zkompilovaný a plně bench potvrzený.
+
+> **S11 dodatek (2026-08-01):** OI1 vyřešeno — T3=`0xa90625910004ba28`,
+> T4=`0xb6062591abac6f28` (test01 HW bring-up). Fáze 4 (T3/T4 warm-up) a Fáze 7
+> (`err_t3`/`err_t4`) doběhnuty na reálném HW — Lubor potvrdil. Bench test
+> kompletní.
 
 ---
 
