@@ -14,11 +14,12 @@ jednotku klimatizace (Toshiba)** instalovanou v garáži. Systém chrání dvě 
 - **šasi venkovní jednotky** (proti zamrznutí kondenzátu na povrchu),
 - **odtokové potrubí kondenzátu** (proti ucpání ledem a přetečení).
 
-Systém sleduje čtyři teplotní čidla (DS18B20): venkovní teplotu, teplotu výparníku,
-teplotu šasi a teplotu odtokové trubky. Z chování teploty výparníku **detekuje odmrazovací
-cyklus** jednotky (defrost) a v reakci na něj i na obecné mrazové podmínky aktivuje topné
-kabely na šasi a odtoku po konfigurovatelnou dobu. Prahy i časovače jsou nastavitelné přímo
-z **Home Assistant** bez nutnosti rekompilace.
+Systém sleduje čtyři teplotní čidla (DS18B20): venkovní teplotu, teplotu plynového
+vývodu výměníku venkovní jednotky, teplotu šasi a teplotu odtokové trubky. Z chování
+teploty plynového vývodu **detekuje odmrazovací cyklus** jednotky (defrost) a v reakci
+na něj i na obecné mrazové podmínky aktivuje topné kabely na šasi a odtoku po
+podmínkou řízenou dobu (ADR-007/008: garantované minimum + bezpečnostní strop). Prahy
+i časovače jsou nastavitelné přímo z **Home Assistant** bez nutnosti rekompilace.
 
 Řídicí jednotka je postavena na **ESP32-WROOM-32UE** s firmwarem **ESPHome (ESP-IDF
 backend)** na custom PCB s MOSFET/SSR výstupy pro 230 VAC topné kabely.
@@ -76,11 +77,11 @@ roste podle potřeby, ne preventivně do hloubky.
 | Fáze | Cíl | Stav |
 |---|---|---|
 | **0 — Concept & Breadboard** | Zadání, HW scope, funkční prototyp na breadboardu s ChatGPT-asistovaným kódem | ✅ Done |
-| **1 — Doc-sync & Code Review** | Nastartovat standardizovanou dokumentaci, provést review existujícího kódu, vytěžit dílčí úkoly | 🔄 Active |
-| **HW Finalizace** | Dokončení a osazení custom PCB, ověření na finálním HW | ⏳ Planned |
-| **2 — Firmware Cleanup & Hardening** | Odstranění testovacích/dočasných bloků z kódu (TODO adresy čidel, testovací VL53L0X/BME280 blok), doladění defrost logiky podle review | ⏳ Planned |
-| **3 — Bench Validation** | Ověření defrost/heat logiky na finálním HW se simulačním režimem i reálnými senzory | ⏳ Planned |
-| **4 — Field Deployment** | Nasazení v garáži, ověření přes zimní sezónu | ⏳ Planned |
+| **1 — Doc-sync & Code Review** | Nastartovat standardizovanou dokumentaci, provést review existujícího kódu, vytěžit dílčí úkoly | ✅ Done |
+| **HW Finalizace** | Dokončení a osazení custom PCB, ověření na finálním HW | ✅ Done |
+| **2 — Firmware Cleanup & Hardening** | Odstranění testovacích/dočasných bloků z kódu (TODO adresy čidel, testovací VL53L0X/BME280 blok), doladění defrost logiky podle review | ✅ Done |
+| **3 — Bench Validation** | Ověření defrost/heat logiky na finálním HW se simulačním režimem i reálnými senzory | ✅ Done |
+| **4 — Field Deployment** | Fyzická montáž (topné kabely, finální umístění čidel), nasazení v garáži, ověření přes zimní sezónu | 🔄 Active |
 
 *(Detailní fázový model — cíle, stav, hlavní výstupy — vede `ROADMAP.md`; tato tabulka
 je jen orientační zrcadlo pro rychlou orientaci a musí s ním zůstat v souladu.)*
@@ -93,3 +94,4 @@ je jen orientační zrcadlo pro rychlou orientaci a musí s ním zůstat v soula
 |---|---|---|
 | 1.0 | 2026-07-10 | První verze. Kick-off restartu projektu pod standardizovaným workflow (štíhlý seed z Garage_Windows). |
 | 1.1 | 2026-07-10 | Fázová tabulka sladěna s `ROADMAP.md` (doplněna fáze "3 — Bench Validation", Field Deployment posunut na fázi 4). Nalezeno při konzistenční revizi doc seedu (S1). |
+| 1.2 | 2026-08-01 | Fáze 1-3 označeny Done, aktuální fáze přepnuta na 4 — Field Deployment (sladěno s `ROADMAP.md` v1.2). Oprava stale odkazu "teplota výparníku" → "teplota plynového vývodu" (ADR-011 rename, S9) a "konfigurovatelnou dobu" → popis floor/ceiling modelu (ADR-007/008). Nalezeno při dokumentačním úklidu po uzavření bench-test rozsahu (S15, Implementer). |

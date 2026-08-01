@@ -1,10 +1,19 @@
 # TEST PLAN — Garage_Drain_Defrost
 
-> **Účel:** Ověření změn ze session S5/S6/S7 (OI8/ADR-006, OI9/ADR-007+008, OI12,
-> OI2, OI6/ADR-009) na hotovém hardware (PCB) — první reálný test mimo breadboard.
+> **Účel:** Bench test checklist na hotovém hardware (PCB) — Fáze 0 (2026-07-21)
+> až Fáze 10 (2026-08-01, S15), pokrývá ADR-004/005/006/007/008/009/010/011,
+> OI1/4/5/12/13/14/17/20, BUG-001 až BUG-007. Kompletní, viz "Výsledek session"
+> na konci dokumentu a `ROADMAP.md` (Fáze 3 — Bench Validation: ✅ Done).
 > **Vlastník:** Implementer (CC), průběžně aktualizován.
-> **Rozsah:** Firmware `ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`, průběžně rozšiřováno
-> o nálezy z bench testu (BUG-001..004, ADR-009).
+> **Rozsah:** Firmware `ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`.
+> **Názvosloví napříč fázemi:** starší kroky (Fáze 2/3/5a/7, psané před ADR-011/
+> ADR-005) odkazují na entity pod jejich tehdejšími názvy — `t_evap`/"Evaporator
+> Temperature"/"Sim Evaporator" (před ADR-011, S9) a anglické `name:` (před
+> ADR-005, S14). Historický text kroků je ponechán beze změny (accuracy k času
+> provedení), ale aktuální HA/Web UI název dnes je: `t_gas_inlet` → **"Teplota
+> výměníku"** (provoz) / **"Teplota výměníku (čidlo)"** (servisní), `sim_t_gas_inlet`
+> → **"Simulovaná teplota výměník (°C)"**. Při re-testu od nuly hledej v HA tyhle
+> aktuální názvy, ne ty v textu kroku.
 
 ---
 
@@ -309,12 +318,45 @@
       selže a AP se aktivuje)
 - [✅] `esphome compile`/OTA reflash proběhne bez problémů (ověřuje `ota:` list
       syntax nezpůsobil regresi)
-- [ ] "Uptime (s)" entita se objeví ve Web serveru/HA a roste (OI5) — po
-      rebootu od 0, ne `unavailable`
+- [✅] "Čas chodu ESP32 (s)" entita se objeví ve Web serveru/HA a roste (OI5) —
+      po rebootu od 0, ne `unavailable` (název upraven S14, ADR-005 — dřív
+      "Uptime (s)")
+
+## Fáze 10 — ADR-005 execution: entity rename + device grouping
+
+> Velký, plošný zásah (~35 entit přejmenováno, přidán `device_id:` grouping,
+> nová entita "Stav systému"). Cíl: ověřit, že se nic neztratilo/neduplikovalo
+> a že grouping v HA/Web UI dává smysl. Interní `id:` (a tedy chování logiky)
+> se neměnilo — čistě kosmetická/expoziční změna, žádná regrese v defrost
+> logice se neočekává, ale stojí za rychlou kontrolu.
+
+- [✅] Web UI/HA po reflashi ukazuje **všechny** entity s novými CZ názvy,
+      žádná nezmizela (crosscheck proti `#Archive/ADR-005_execution_draft.md`)
+- [✅] 4 skupiny (Globální/Provoz/Nastavení/Servisní) se zobrazují a entity
+      jsou rozřazené podle draftu
+- [✅] DI1/DI2/Aux DO3/Aux DO4 zůstávají skryté (nejsou v žádné skupině,
+      neobjeví se v HA)
+- [✅] Nová entita "Stav systému" (skupina Globální) ukazuje správnou hodnotu
+      podle stavu: `OFF` (hlavní vypínač OFF) → `IDLE` (zapnuto, mrazový režim
+      OFF) → `ARMED` (mrazový režim ON, žádný heater) → `Heater ON` (běží
+      defrost) — stejná posloupnost jako WD LED, souběžně
+  > 🐛 **BUG-007 nalezen zde (2026-08-01):** "Stav systému" se publikoval v
+  > logu opakovaně, několikrát za sekundu, i beze změny stavu — refresh byl
+  > navázán na 500ms WD LED interval, ale `text_sensor::publish_state()`
+  > nededupuje jako `binary_sensor`. Opraveno na event-driven refresh (viz
+  > `BUGS.md` BUG-007). Po re-flashi ověř: log ukazuje "Stav systému" jen při
+  > skutečné změně stavu (OFF/IDLE/ARMED/Heater ON přechody), ne opakovaně.
+- [✅] Regrese: HEAT_MODE/DEFROST_ORDERED/oba heatery pod novými CZ názvy
+      fungují stejně jako předtím (rychlý sanity check, ne plné přetestování
+      Fází 2-8 — logika se neměnila)
+- [✅] Round 2 (S15): všech 35 entit má ve Web UI/HA ikonu (ne obecnou
+      výchozí), dle `#Archive/ADR-005_execution_draft.md` sekce "Round 2"
+- [✅] "Protimrazový režim" ukazuje **Zapnuto/Vypnuto** (ne "Chladno") —
+      ověřuje odebrání `device_class: cold`
 
 ---
 
-## Výsledek session (S5–S11, kompletní vč. T3/T4)
+## Výsledek session (S5–S15, kompletní — viz S12-S15 dodatek na konci)
 
 **Datum testu:** 2026-07-28 až 2026-07-31
 **Nálezy:**
@@ -366,6 +408,27 @@ BUG-001..006 a ADR-004/009 zkompilovaný a plně bench potvrzený.
 > (`err_t3`/`err_t4`) doběhnuty na reálném HW — Lubor potvrdil. Bench test
 > kompletní.
 
+> **S12-S15 dodatek (2026-08-01) — Fáze 8, 9, 10:**
+> - **Fáze 8 (OI17 + OI4, S12):** `_used` senzory event-driven refresh, T3/T4
+>   error-check 60s→20s. Bench potvrzeno — sim mode instant refresh, real mode
+>   fast tiery, BUG-002/005 regrese OK. Vedlejší nález: **AP-001** (tvrdý HW
+>   reset vs. `flash_write_interval`, `BUGS.md` — systémové chování, ne bug).
+> - **Fáze 9 (OI13 + OI14 + OI5, S13):** "Kód chyby" event-driven refresh,
+>   `wifi.ap` password, `ota:` list syntax, ESP uptime parita. Bench potvrzeno
+>   kompletně.
+> - **Fáze 10 (ADR-005 execution, S14+S15):** entity rename (CZ), device
+>   grouping (Globální/Provoz/Nastavení/Servisní), nová entita "Stav systému",
+>   ikony na všech 35 entitách. Bench potvrzeno kompletně, vč. HA párování
+>   (importovalo se čistě). **BUG-007** nalezen a opraven (viz `BUGS.md`) —
+>   "Stav systému" log spam, refresh byl na 500ms interval místo event-driven.
+>   Vedlejší oprava: `device_class: cold` odstraněn z "Protimrazový režim"
+>   (matoucí "Chladno" stav místo Zapnuto/Vypnuto).
+>
+> **Bench test (S5–S15) je tímto kompletní ve všech ohledech** — žádný
+> zbylý blocker, žádná otevřená otázka. Projekt přechází do `ROADMAP.md`
+> Fáze 4 (Field Deployment). Zbylé BACKLOG položky čekají na fyzickou montáž
+> nebo na zimní pozorování (viz `HANDOVER_20260801.md`).
+
 ---
 
-*Založeno: S5, 2026-07-21 (Implementer/CC).*
+*Založeno: S5, 2026-07-21 (Implementer/CC). Uzavřeno: S15, 2026-08-01.*

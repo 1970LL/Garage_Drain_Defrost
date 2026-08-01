@@ -28,6 +28,12 @@ docs/Software_DevDoc/
 ├── WORKING_AGREEMENT.md           workflow rules, roles, session protocol
 ├── PROJECT_VISION.md              high-level project goals, constraints, quality stance
 │
+├── ── AWAITING ARCHITEKT ────────────────────────────────────────────────────
+│
+├── ADR-005-plus_proposal_draft.md Implementer proposal (not an ADR — CC never
+│                                  writes ADRs, WORKING_AGREEMENT §1.2), awaiting
+│                                  Architekt review/formalization
+│
 ├── ── SUBFOLDERS ────────────────────────────────────────────────────────────
 │
 ├── Prompts/
@@ -38,13 +44,15 @@ docs/Software_DevDoc/
 │                                  TEST_PLAN.md itself has carried all bench-test content
 │                                  so far, no separate result artifacts needed yet
 │
-└── #Archive/                      superseded snapshots, same filename as when active:
+└── #Archive/                      superseded snapshots + parked working drafts,
+    │                                same filename as when active:
     ├── Code_review_20260710.md
     ├── HANDOVER_20260710.md
     ├── HANDOVER_20260722.md
     ├── HANDOVER_20260728.md
     ├── HANDOVER_20260730.md
-    └── HANDOVER_20260731.md
+    ├── HANDOVER_20260731.md
+    └── ADR-005_execution_draft.md  (working draft, see note below)
 ```
 
 **Sibling reference material (outside Software_DevDoc/, under `docs/`):** not part
@@ -105,6 +113,15 @@ Created this session
   HANDOVER archived  ──►  #Archive/HANDOVER_YYYYMMDD.md (same filename, unchanged)
 ```
 
+**Working drafts** (e.g. `ADR-005_execution_draft.md`, a crosscheck table Lubor
+reviews/edits before an entity-rename execution) follow a related but distinct
+pattern: created active → reviewed/edited → implemented → moved to `#Archive/`
+as a record. Unlike HANDOVER, a draft can be **pulled back out of `#Archive/`**
+for a follow-up round (same file, not a new one) if a related follow-on task
+comes up later — e.g. ADR-005's draft went Active → Archive (Round 1, entity
+rename, S14) → Active again → Archive (Round 2, icons, S15). Re-archive under
+the same filename each time.
+
 ---
 
 ## Append-only documents (never overwrite content)
@@ -144,7 +161,11 @@ as-needed rather than upfront:
 
 ---
 
-*Last updated: 2026-08-01 (S13, Implementer) — TEST_PLAN.md and HANDOVER now
-active/in regular use (both were still-empty placeholders as of the 2026-07-10
-version of this map); #Archive/ populated (5 HANDOVER snapshots + one archived
-code review); sibling reference-material folders (Toshiba, Thermal Cable) noted.*
+*Last updated: 2026-08-01 (S15, Implementer, doc-cleanup pass) — #Archive/ now
+also holds a parked working draft (`ADR-005_execution_draft.md`), not just
+superseded HANDOVER/code-review snapshots; documented the pull-back-for-a-
+new-round pattern this draft went through. `BUGS.md` gained its first
+Anti-patterny entry (AP-001) and first entry re-numbered past BUG-006
+(BUG-007). New "Awaiting Architekt" category added — a proposal document
+(`ADR-005-plus_proposal_draft.md`) that isn't a HANDOVER/draft-being-executed,
+just sits until the Architekt reviews it.*

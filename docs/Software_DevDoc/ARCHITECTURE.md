@@ -3,10 +3,11 @@
 > **Účel:** Snapshot současného stavu systému. Popisuje *co* je postaveno, ne *proč*.
 > Pro zdůvodnění technických voleb viz `DECISIONS.md` (ADR-NNN odkazy v textu).
 > **Vlastník:** Architekt.
-> **Aktuální stav:** Restart pod standardizovaným workflow. Firmware pochází z
-> ChatGPT/breadboard éry (pre-review) — tento dokument popisuje kód *tak, jak je nyní*,
-> včetně známých dočasných/testovacích bloků a otevřených TODO.
-> **Phase:** 1 — Doc-sync & Code Review.
+> **Aktuální stav:** Bench-validovaný firmware (Fáze 0–10 `TEST_PLAN.md` kompletní,
+> BUG-001 až BUG-007 opraveny), HA napárováno (S15, 2026-08-01). Tento dokument
+> popisuje kód *tak, jak je nyní* — žádné otevřené TODO v YAML samotném; zbylé
+> BACKLOG položky čekají na zimní pozorování nebo Field Deployment.
+> **Phase:** 4 — Field Deployment (viz `ROADMAP.md`).
 
 ---
 
@@ -77,12 +78,16 @@ fakticky nesprávná; opraveno po ověření přes `esphome config` (varování 
 
 Čtyři DS18B20 senzory na sdílené sběrnici GPIO21:
 
-| ID | Název | Adresa | Účel |
+| ID | Název (HA, skupina Servisní) | Adresa | Účel |
 |---|---|---|---|
-| `t_outside` | Outside Temperature | `0x3400000051876f28` — komisionováno S5 (2026-07-28) | Venkovní teplota |
-| `t_gas_inlet` | Gas Inlet Temperature | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota plynového vývodu výměníku venkovní jednotky (T2) |
-| `t_chassis` | Chassis Temperature | `0xa90625910004ba28` — komisionováno S11 (2026-08-01) | Teplota šasi jednotky |
-| `t_drain` | Drain Pipe Temperature | `0xb6062591abac6f28` — komisionováno S11 (2026-08-01) | Teplota odtokové trubky |
+| `t_outside` | Venkovní teplota (čidlo) | `0x3400000051876f28` — komisionováno S5 (2026-07-28) | Venkovní teplota |
+| `t_gas_inlet` | Teplota výměníku (čidlo) | `0xab030a9794259928` — komisionováno S5 (2026-07-28) | Teplota plynového vývodu výměníku venkovní jednotky (T2) |
+| `t_chassis` | Teplota Chassis (čidlo) | `0xa90625910004ba28` — komisionováno S11 (2026-08-01) | Teplota šasi jednotky |
+| `t_drain` | Teplota odpadu (čidlo) | `0xb6062591abac6f28` — komisionováno S11 (2026-08-01) | Teplota odtokové trubky |
+
+Raw čidla jsou v HA ve skupině **Servisní** (diagnostika) — provozní hodnotu,
+kterou čte řídicí logika, exponují odpovídající `_used` senzory ve skupině
+**Provoz** (§3.2). Device grouping a CZ názvosloví: §9 (ADR-005).
 
 Základní `update_interval: 20s`. **Bez median filtru** (BUG-006, S10 2026-07-31
 — zakomentován, ne smazán, viz §3.1).
@@ -142,8 +147,10 @@ nepotřebuje.
 ### 3.2 Simulation Layer ("used" sensors)
 
 Nad reálnými senzory existuje indirection vrstva — čtyři `template` senzory
-(`t_outside_used`, `t_gas_inlet_used`, `t_chassis_used`, `t_drain_used`), které přepínají
-mezi reálnou hodnotou a simulovanou hodnotou podle globálního přepínače `sim_mode`:
+(`t_outside_used`, `t_gas_inlet_used`, `t_chassis_used`, `t_drain_used`; v HA
+"Venkovní teplota" / "Teplota výměníku" / "Teplota Chassis" / "Teplota odpadu",
+skupina **Provoz**, ADR-005), které přepínají mezi reálnou hodnotou a
+simulovanou hodnotou podle globálního přepínače `sim_mode`:
 
 ```
 sim_mode == true  → vrací sim_t_outside / sim_t_gas_inlet / sim_t_chassis / sim_t_drain
@@ -318,11 +325,24 @@ vylučující `continuous` stavy (jen jeden aktivní, priorita shora):
 Výběrová lambda (500 ms interval): `!main → disabled; else heater_on → defrost;
 else heat_mode → armed; else idle`.
 
-**HA-facing:**
-- `bs_err_wifi_lost`, `bs_err_t1`, `bs_err_t2`, `bs_err_t3`, `bs_err_t4` —
-  jednotlivé binary_sensory (device_class: problem)
-- `bs_any_error` — souhrnný OR všech pěti
-- `sensor_error_status` (text_sensor) — čitelný comma-separated seznam aktivních chyb ("OK" když žádná)
+**HA-facing** (názvy dle ADR-005 execution, S14):
+- `bs_err_wifi_lost` ("Porucha WiFi", skupina Globální), `bs_err_t1..t4`
+  ("Porucha čidla T1-T4 ...", skupina Servisní) — jednotlivé binary_sensory
+  (device_class: problem)
+- `bs_any_error` ("Aktivní porucha", Globální) — souhrnný OR všech pěti
+- `sensor_error_status` ("Kód chyby", Globální, text_sensor) — čitelný
+  comma-separated seznam aktivních chyb ("OK" když žádná); event-driven refresh
+  (OI13, §3.2 vzor) místo dřívějšího plochého 60s pollu
+- `sensor_system_state` ("Stav systému", Globální, text_sensor, nová entita
+  ADR-005 bod 3) — zrcadlí stejnou WD selector lambdu jako čtyři stavy výše,
+  jako čitelný text: `OFF` / `IDLE` / `ARMED` / `Heater ON` (hodnoty anglicky,
+  konzistentně s Garage_Windows precedentem — CZ jen v `name:`, ne ve
+  vypsaných stavech). **BUG-007:** původně navázáno na 500ms WD LED interval —
+  `text_sensor::publish_state()` nededupuje (na rozdíl od `binary_sensor`), takže
+  to re-publikovalo/logovalo 2×/s napořád. Opraveno na event-driven refresh:
+  `sw_main_system_enable` turn_on/turn_off_action, `sw_heater_chassis`/
+  `sw_heater_drain` on_turn_on/on_turn_off, `bs_heat_mode` on_state:, plus
+  `on_boot:` safety net.
 
 ---
 
@@ -353,7 +373,47 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 
 ---
 
-## 8. Verzování dokumentu
+## 8. HA Entity Exposure & Device Grouping (ADR-005, S14)
+
+ADR-005 execution (S14, 2026-08-01): CZ friendly names + `esphome: devices:`
+grouping, šablona `Garage_Windows` (tam Globální + per-fyzická-jednotka Okno
+1/Okno 2 — tady žádná druhá fyzická jednotka není, takže funkční rozdělení).
+Draft s crosscheck tabulkou entita-po-entitě: `#Archive/ADR-005_execution_draft.md`.
+
+**Skupiny (`esphome: devices:`):**
+
+| `device_id` | HA název | Účel |
+|---|---|---|
+| `globalni` | Globální | Celý systém — hlavní vypínač, WiFi/souhrnná porucha, "Kód chyby", "Stav systému", uptime |
+| `provoz` | Provoz | Živý provozní stav — HEAT_MODE/DEFROST_ORDERED, `_used` teploty, oba heatery |
+| `nastaveni` | Nastavení | Uživatelem upravitelné prahy a časy (8× `number`) |
+| `servisni` | Servisní | Diagnostika — raw čidla, Simulation Mode + 4 sim entity, per-senzor error flagy |
+
+**Škálování:** mění se pouze `name:` (→ odvozený HA `entity_id`) a nový
+`device_id:` atribut. Interní YAML `id:` (lambda/action reference) beze
+změny — zůstávají anglické, v HA neviditelné.
+
+**Rozhodnutí (Lubor, 2026-08-01):**
+- Raw i `_used` teplotní senzory zůstávají obě exponované (raw = Servisní/
+  diagnostika, used = Provoz/skutečně používaná hodnota) — v reálném provozu
+  (Simulation Mode OFF) mají identickou hodnotu; zvažováno schovat raw úplně,
+  zatím ponechány, lze vyřadit z dashboardu na HA straně později.
+- Rezervované piny (DI1/DI2/DO3/DO4) zůstávají `internal: true`, neexponovány
+  — nemají žádnou funkci.
+
+**Ikony (Round 2, S15, 2026-08-01):** všech 35 exponovaných entit má
+explicitní `icon: "mdi:..."` (draft: `#Archive/ADR-005_execution_draft.md`,
+sekce "Round 2"). Poznámka k `device_class:` — v HA řídí nejen výchozí ikonu,
+ale i **text zobrazovaného stavu** (sémantický, ne obecné Zapnuto/Vypnuto).
+`bs_heat_mode` mělo `device_class: cold`, což HA zobrazovalo jako "Chladno" —
+Lubor si toho všiml (BUG-podobný nález, ne funkční regrese, jen matoucí
+prezentace), `device_class` odebrán, nahrazen `icon: "mdi:snowflake-alert"`.
+Pět error binary_sensorů (`device_class: problem` → HA "Problem"/"OK")
+ponecháno beze změny — sémanticky sedí.
+
+---
+
+## 9. Verzování dokumentu
 
 | Verze | Datum | Změna |
 |---|---|---|
@@ -371,3 +431,7 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.11 | 2026-08-01 | §3/§7: reálné adresy T3 (`t_chassis`) = `0xa90625910004ba28`, T4 (`t_drain`) = `0xb6062591abac6f28` komisionovány na hotovém HW (test01 bring-up), TODO/placeholder odstraněno pro obě — OI1 kompletně vyřešeno. S11 (Implementer). |
 | 1.12 | 2026-08-01 | §3.2 přepsáno dle OI17 — `_used` senzory `update_interval: never`, refresh čistě event-driven (`on_value:` na raw senzorech/sim number entitách + `on_boot:` safety net), nahradilo plošné `update_interval: 5s`. §4.1 tabulka globálů opravena (`err_t1_t2_fail`/`err_t3_t4_fail` byly stale od ADR-004/OI11 splitu, teď `err_t1..t4`). §5 tabulka opravena dle OI4 (T3/T4 error-check 60s→20s). S12 (Implementer). |
 | 1.13 | 2026-08-01 | §3.1 doplněna poznámka o zváženém a zamítnutém nápadu (fázový posun mezi senzory na sdíleném 1-Wire, "torn read" riziko v DEFROST_ORDERED — zamítnuto, tepelná setrvačnost dominuje). S12 (Implementer). |
+| 1.14 | 2026-08-01 | **ADR-005 execution** — nová §8 (HA Entity Exposure & Device Grouping), §3/§3.2/§5 přepsány na CZ `name:` a `device_id:` grouping (Globální/Provoz/Nastavení/Servisní), nová entita `sensor_system_state` ("Stav systému"). §6 (`number` tabulka) beze změny — sloupec uvádí interní `id:`, ne `name:`, ty se nemění. S14 (Implementer). |
+| 1.15 | 2026-08-01 | §5: BUG-007 — `sensor_system_state` refresh mechanismus opraven z 500ms interval (log spam) na event-driven (viz BUGS.md). S14 (Implementer). |
+| 1.16 | 2026-08-01 | §8 doplněno o ADR-005 Round 2 (ikony) — všech 35 entit má `icon:`, `bs_heat_mode` ztratilo `device_class: cold` (matoucí "Chladno" stav), nahrazeno explicitní ikonou. S15 (Implementer). |
+| 1.17 | 2026-08-01 | Hlavičkové "Aktuální stav"/"Phase" opraveny ze stale "Phase 1 — Doc-sync & Code Review, ChatGPT/pre-review éra" na aktuální stav (bench-validováno, HA napárováno, Phase 4 — Field Deployment dle `ROADMAP.md` v1.2). Nalezeno při dokumentačním křížovém úklidu (S15, Implementer). |

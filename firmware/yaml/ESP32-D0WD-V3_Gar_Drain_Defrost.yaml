@@ -19,6 +19,17 @@ esphome:
   friendly_name: "Garage Drain Defrost"
   comment: !secret device_comment
   build_path: "D:/Code/VSCode_Programs/ESP32/GARAGE_DRAIN_DEFROST/firmware/.esphome"
+  # ADR-005 execution (S14, 2026-08-01): device grouping, Windows precedent
+  # (Globální/Okno N there; no second physical unit here, so functional split).
+  devices:
+  - id: globalni
+    name: Globální
+  - id: provoz
+    name: Provoz
+  - id: nastaveni
+    name: Nastavení
+  - id: servisni
+    name: Servisní
   # OI17 safety net: force one refresh of all four "(used)" sensors after boot.
   # Normally unnecessary — the raw sensors' own first publish (on_value:) does
   # this within seconds of boot — but covers the edge case where Simulation
@@ -31,6 +42,11 @@ esphome:
     - component.update: t_gas_inlet_used
     - component.update: t_chassis_used
     - component.update: t_drain_used
+    # ADR-005 bod 3 (S14): safety net for "Stav systému" (sensor_system_state)
+    # — same rationale as the four above, guarantees an initial value even if
+    # none of its three event-driven triggers (main switch action, heater
+    # on_turn_on/off, HEAT_MODE on_state:) happen to fire right at boot.
+    - component.update: sensor_system_state
 
 esp32:
   board: esp32dev
@@ -163,8 +179,10 @@ sensor:
 # polling independently every 5s regardless of whether the source changed.
 - platform: dallas_temp
   address: 0x3400000051876f28 # commissioned S5 2026-07-28 (test01 HW bring-up)
-  name: "Outside Temperature"
+  name: "Venkovní teplota (čidlo)"
   id: t_outside
+  device_id: servisni
+  icon: "mdi:thermometer-lines"
   update_interval: 20s
   accuracy_decimals: 1
   on_value:
@@ -183,8 +201,10 @@ sensor:
     # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0xab030a9794259928 # commissioned S5 2026-07-28 (test01 HW bring-up)
-  name: "Gas Inlet Temperature"
+  name: "Teplota výměníku (čidlo)"
   id: t_gas_inlet
+  device_id: servisni
+  icon: "mdi:thermometer-lines"
   update_interval: 20s
   accuracy_decimals: 1
   on_value:
@@ -199,8 +219,10 @@ sensor:
     # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0xa90625910004ba28 # commissioned S11 2026-08-01 (test01 HW bring-up)
-  name: "Chassis Temperature"
+  name: "Teplota Chassis (čidlo)"
   id: t_chassis
+  device_id: servisni
+  icon: "mdi:thermometer-lines"
   update_interval: 20s
   accuracy_decimals: 1
   on_value:
@@ -215,8 +237,10 @@ sensor:
     # BUG-006: median filter disabled, base interval 120s→20s — see T1 above.
 - platform: dallas_temp
   address: 0xb6062591abac6f28 # commissioned S11 2026-08-01 (test01 HW bring-up)
-  name: "Drain Pipe Temperature"
+  name: "Teplota odpadu (čidlo)"
   id: t_drain
+  device_id: servisni
+  icon: "mdi:thermometer-lines"
   update_interval: 20s
   accuracy_decimals: 1
   on_value:
@@ -265,8 +289,10 @@ sensor:
     # itself still needs its own forced, synchronous refresh, since it doesn't
     # change any of the four source values on_value: reacts to.)
 - platform: template
-  name: "Outside Temperature (used)"
+  name: "Venkovní teplota"
   id: t_outside_used
+  device_id: provoz
+  icon: "mdi:thermometer"
   unit_of_measurement: "°C"
   accuracy_decimals: 1
   update_interval: never
@@ -278,8 +304,10 @@ sensor:
     }
 
 - platform: template
-  name: "Gas Inlet Temperature (used)"
+  name: "Teplota výměníku"
   id: t_gas_inlet_used
+  device_id: provoz
+  icon: "mdi:thermometer"
   unit_of_measurement: "°C"
   accuracy_decimals: 1
   update_interval: never
@@ -291,8 +319,10 @@ sensor:
     }
 
 - platform: template
-  name: "Chassis Temperature (used)"
+  name: "Teplota Chassis"
   id: t_chassis_used
+  device_id: provoz
+  icon: "mdi:thermometer"
   unit_of_measurement: "°C"
   accuracy_decimals: 1
   update_interval: never
@@ -304,8 +334,10 @@ sensor:
     }
 
 - platform: template
-  name: "Drain Pipe Temperature (used)"
+  name: "Teplota odpadu"
   id: t_drain_used
+  device_id: provoz
+  icon: "mdi:thermometer"
   unit_of_measurement: "°C"
   accuracy_decimals: 1
   update_interval: never
@@ -321,8 +353,10 @@ sensor:
 # HA-side, not firmware-side). "Runtime topení" (cumulative heater on-time)
 # part of OI5 stays deferred (nice-to-have) — this is just the uptime sensor.
 - platform: uptime
-  name: "Uptime (s)"
+  name: "Čas chodu ESP32 (s)"
   id: uptime_sensor
+  device_id: globalni
+  icon: "mdi:clock-outline"
 
 # ======================== TEXT SENSORS ========================
 # Human-readable error status for HA dashboard
@@ -335,8 +369,10 @@ sensor:
 # of up-to-60s-lag, and no redundant re-publishes when nothing changed.
 text_sensor:
 - platform: template
-  name: "Error Status"
+  name: "Kód chyby"
   id: sensor_error_status
+  device_id: globalni
+  icon: "mdi:alert-circle"
   update_interval: never
   lambda: |-
     // Build comma-separated list of ALL active errors
@@ -369,6 +405,36 @@ text_sensor:
       }
     }
     return status;
+
+# ADR-005 bod 3 (S14, 2026-08-01): mirrors the WD LED selector lambda's state
+# machine (see interval: below) as human-readable text — same priority order
+# (disabled > defrost > armed > idle), values kept English per Lubor (Garage
+# Windows precedent: CZ entity name, English state values).
+#
+# Refresh is event-driven (`component.update: sensor_system_state`), NOT tied
+# to the 500ms WD LED interval — text_sensor::publish_state() doesn't dedupe
+# like binary_sensor's does, so a fixed-tick refresh republished/logged twice
+# a second forever regardless of whether the state actually changed (found by
+# Lubor: "log se zaplevuje"). Fixed by hooking the refresh onto the three
+# actual state-change points instead: `sw_main_system_enable`'s turn_on/
+# turn_off_action, `sw_heater_chassis`/`sw_heater_drain`'s on_turn_on/
+# on_turn_off, and `bs_heat_mode`'s on_state: (binary_sensor DOES dedupe, same
+# as the OI13 error-flag pattern). Plus the existing on_boot: safety net.
+- platform: template
+  name: "Stav systému"
+  id: sensor_system_state
+  device_id: globalni
+  icon: "mdi:led-on"
+  update_interval: never
+  lambda: |-
+    bool main_on    = id(main_system_enabled);
+    bool heater_on  = id(sw_heater_chassis).state || id(sw_heater_drain).state;
+    bool heat_armed = id(bs_heat_mode).state;
+
+    if (!main_on) return std::string("OFF");
+    if (heater_on) return std::string("Heater ON");
+    if (heat_armed) return std::string("ARMED");
+    return std::string("IDLE");
 
 # ======================== BINARY SENSORS ========================
 binary_sensor:
@@ -407,9 +473,15 @@ binary_sensor:
 # Disabled when outside temp ≥ heat_off_th
 # Hysteresis: dual thresholds prevent oscillation
 - platform: template
-  name: "HEAT_MODE"
+  name: "Protimrazový režim"
   id: bs_heat_mode
-  device_class: cold
+  device_id: provoz
+  # ADR-005 Round 2 (S15, 2026-08-01): device_class: cold removed — Lubor
+  # noticed HA showed the state as "Chladno" (HA's device_class:cold on-state
+  # label), not a plain Zapnuto/Vypnuto. device_class drives both the default
+  # icon AND the displayed state text; explicit icon: below replaces the lost
+  # default snowflake icon, state text now falls back to generic On/Off.
+  icon: "mdi:snowflake-alert"
   lambda: |-
     // If main system is disabled, HEAT_MODE is always OFF
     if (!id(main_system_enabled)) {
@@ -426,6 +498,8 @@ binary_sensor:
       return heat;
     }
     return {};
+  on_state:
+  - component.update: sensor_system_state
 
 # DEFROST_ORDERED (uses GAS INLET (used), OUTSIDE (used) & thresholds)
 # Triggered when:
@@ -434,8 +508,10 @@ binary_sensor:
 #   3) HEAT_MODE is armed (ADR-009: freeze-relevance gate)
 # All three conditions required (AND logic)
 - platform: template
-  name: "DEFROST_ORDERED"
+  name: "Odmrazení aktivní"
   id: bs_defrost
+  device_id: provoz
+  icon: "mdi:snowflake-melt"
   lambda: |-
     // If main system is disabled, defrost request is always OFF
     if (!id(main_system_enabled)) {
@@ -462,50 +538,62 @@ binary_sensor:
 # transitions — same event-driven pattern as OI17. (binary_sensor's trigger is
 # named on_state:, not on_value: like sensor/number.)
 - platform: template
-  name: "Error: WiFi Lost"
+  name: "Porucha WiFi"
   id: bs_err_wifi_lost
+  device_id: globalni
   device_class: problem
+  icon: "mdi:wifi-alert"
   lambda: 'return id(err_wifi_lost);'
   on_state:
   - component.update: sensor_error_status
 
 - platform: template
-  name: "Error: T1 Sensor Fail (Outside)"
+  name: "Porucha čidla T1 (venkovní)"
   id: bs_err_t1
+  device_id: servisni
   device_class: problem
+  icon: "mdi:thermometer-alert"
   lambda: 'return id(err_t1);'
   on_state:
   - component.update: sensor_error_status
 
 - platform: template
-  name: "Error: T2 Sensor Fail (Gas Inlet)"
+  name: "Porucha čidla T2 (výměník)"
   id: bs_err_t2
+  device_id: servisni
   device_class: problem
+  icon: "mdi:thermometer-alert"
   lambda: 'return id(err_t2);'
   on_state:
   - component.update: sensor_error_status
 
 - platform: template
-  name: "Error: T3 Sensor Fail (Chassis)"
+  name: "Porucha čidla T3 (Chassis)"
   id: bs_err_t3
+  device_id: servisni
   device_class: problem
+  icon: "mdi:thermometer-alert"
   lambda: 'return id(err_t3);'
   on_state:
   - component.update: sensor_error_status
 
 - platform: template
-  name: "Error: T4 Sensor Fail (Drain)"
+  name: "Porucha čidla T4 (odpad)"
   id: bs_err_t4
+  device_id: servisni
   device_class: problem
+  icon: "mdi:thermometer-alert"
   lambda: 'return id(err_t4);'
   on_state:
   - component.update: sensor_error_status
 
 # Generic error active indicator (any error)
 - platform: template
-  name: "System Error Active"
+  name: "Aktivní porucha"
   id: bs_any_error
+  device_id: globalni
   device_class: problem
+  icon: "mdi:alert-circle-outline"
   lambda: |-
     return id(err_wifi_lost) || id(err_t1) || id(err_t2) || id(err_t3) || id(err_t4);
 
@@ -610,8 +698,10 @@ switch:
 # the lambda (which already reads the correctly-restored global); no action
 # fires at boot.
 - platform: template
-  name: "Main System Enable"
+  name: "Hlavní vypínač"
   id: sw_main_system_enable
+  device_id: globalni
+  icon: "mdi:power"
   optimistic: false
   restore_mode: DISABLED
   lambda: |-
@@ -621,6 +711,7 @@ switch:
   - lambda: |-
       id(main_system_enabled) = true;
       // System logic will resume automatically
+  - component.update: sensor_system_state
   turn_off_action:
   - lambda: |-
       // Disable system and force safe state
@@ -632,19 +723,32 @@ switch:
   # Force both heaters OFF immediately
   - switch.turn_off: sw_heater_chassis
   - switch.turn_off: sw_heater_drain
+  - component.update: sensor_system_state
 
 # HEATING OUTPUTS (SSR mapped switches)
 - platform: output
-  name: "Heater Chassis"
+  name: "Topení Chassis"
   id: sw_heater_chassis
+  device_id: provoz
+  icon: "mdi:heating-coil"
   output: do1_chassis_out
   restore_mode: ALWAYS_OFF
+  on_turn_on:
+  - component.update: sensor_system_state
+  on_turn_off:
+  - component.update: sensor_system_state
 
 - platform: output
-  name: "Heater Drain"
+  name: "Topení odpadu"
   id: sw_heater_drain
+  device_id: provoz
+  icon: "mdi:radiator"
   output: do2_drain_out
   restore_mode: ALWAYS_OFF
+  on_turn_on:
+  - component.update: sensor_system_state
+  on_turn_off:
+  - component.update: sensor_system_state
 
 # Aux outputs (hidden from HA)
 - platform: output
@@ -666,8 +770,10 @@ switch:
 # default ALWAYS_OFF would reset sim_mode_state to false on every boot despite
 # its own restore_value: true.
 - platform: template
-  name: "Simulation Mode"
+  name: "Simulační režim"
   id: sim_mode
+  device_id: servisni
+  icon: "mdi:flask-outline"
   optimistic: false
   restore_mode: DISABLED
   lambda: |-
@@ -972,8 +1078,10 @@ number:
 # HEAT_MODE thresholds
 # Enable when outside temp ≤ this value
 - platform: template
-  name: "Heat Enable Threshold (°C)"
+  name: "Zapnout protimrazový režim při (°C)"
   id: heat_on_th
+  device_id: nastaveni
+  icon: "mdi:thermometer-chevron-up"
   min_value: -20
   max_value: 10
   step: 0.5
@@ -983,8 +1091,10 @@ number:
 
 # Disable when outside temp ≥ this value
 - platform: template
-  name: "Heat Disable Threshold (°C)"
+  name: "Vypnout protimrazový režim při (°C)"
   id: heat_off_th
+  device_id: nastaveni
+  icon: "mdi:thermometer-chevron-down"
   min_value: -10
   max_value: 15
   step: 0.5
@@ -995,8 +1105,10 @@ number:
 # DEFROST detection thresholds
 # Absolute threshold: evaporator temp must be ≥ this value
 - platform: template
-  name: "Defrost Evap Abs Threshold (°C)"
+  name: "Práh teploty výměníku (°C)"
   id: def_abs_th
+  device_id: nastaveni
+  icon: "mdi:thermometer-alert"
   min_value: -10
   max_value: 30
   step: 0.5
@@ -1006,8 +1118,10 @@ number:
 
 # Delta threshold: (evaporator - outside) must be ≥ this value
 - platform: template
-  name: "Defrost Delta Threshold (°C)"
+  name: "Práh rozdílu teplot výměník - venkovní (°C)"
   id: def_dt_th
+  device_id: nastaveni
+  icon: "mdi:delta"
   min_value: 0
   max_value: 20
   step: 0.5
@@ -1021,8 +1135,10 @@ number:
 # Chassis heater: guaranteed minimum run time (floor) — protects against
 # short-cycling since DEFROST_ORDERED has no hysteresis.
 - platform: template
-  name: "Chassis Heater Min Time (min)"
+  name: "Chassis: min čas odmrazování (min)"
   id: chassis_time_floor
+  device_id: nastaveni
+  icon: "mdi:timer-outline"
   min_value: 1
   max_value: 10
   step: 1
@@ -1032,8 +1148,10 @@ number:
 
 # Drain heater: guaranteed minimum run time (floor)
 - platform: template
-  name: "Drain Heater Min Time (min)"
+  name: "Odpad: min čas odmrazování (min)"
   id: drain_time_floor
+  device_id: nastaveni
+  icon: "mdi:timer-outline"
   min_value: 1
   max_value: 10
   step: 1
@@ -1044,8 +1162,10 @@ number:
 # Chassis heater: max activation duration (ceiling — fail-safe against a stuck
 # condition, ADR-007/008). Range 15-60 keeps floor < ceiling structurally true.
 - platform: template
-  name: "Chassis Heater Time (min)"
+  name: "Chassis: max čas odmrazování (min)"
   id: chassis_time_ceiling
+  device_id: nastaveni
+  icon: "mdi:timer-alert-outline"
   min_value: 15
   max_value: 60
   step: 1
@@ -1055,8 +1175,10 @@ number:
 
 # Drain heater: max activation duration (ceiling)
 - platform: template
-  name: "Drain Heater Time (min)"
+  name: "Odpad: max čas odmrazování (min)"
   id: drain_time_ceiling
+  device_id: nastaveni
+  icon: "mdi:timer-alert-outline"
   min_value: 15
   max_value: 60
   step: 1
@@ -1071,8 +1193,10 @@ number:
 # lambda still reads the real sensor branch in that case).
 # Manual outside temperature (used when sim_mode is ON)
 - platform: template
-  name: "Sim Outside (°C)"
+  name: "Simulovaná venkovní teplota (°C)"
   id: sim_t_outside
+  device_id: servisni
+  icon: "mdi:thermometer-outline"
   min_value: -5
   max_value: 15
   step: 0.5
@@ -1084,8 +1208,10 @@ number:
 
 # Manual gas inlet temperature (used when sim_mode is ON)
 - platform: template
-  name: "Sim Gas Inlet (°C)"
+  name: "Simulovaná teplota výměník (°C)"
   id: sim_t_gas_inlet
+  device_id: servisni
+  icon: "mdi:thermometer-outline"
   min_value: -5
   max_value: 25
   step: 0.5
@@ -1097,8 +1223,10 @@ number:
 
 # Manual chassis temperature (used when sim_mode is ON)
 - platform: template
-  name: "Sim Chassis (°C)"
+  name: "Simulovaná teplota Chassis (°C)"
   id: sim_t_chassis
+  device_id: servisni
+  icon: "mdi:thermometer-outline"
   min_value: -5
   max_value: 15
   step: 0.5
@@ -1110,8 +1238,10 @@ number:
 
 # Manual drain temperature (used when sim_mode is ON)
 - platform: template
-  name: "Sim Drain (°C)"
+  name: "Simulovaná teplota odpad (°C)"
   id: sim_t_drain
+  device_id: servisni
+  icon: "mdi:thermometer-outline"
   min_value: -5
   max_value: 15
   step: 0.5

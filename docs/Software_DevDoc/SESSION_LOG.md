@@ -4,6 +4,182 @@
 
 ---
 
+## S15 — 2026-08-01 (Implementer/CC) — ADR-005 Round 2: entity ikony
+
+> Lubor: "nastavuješ ikony, které se zobrazují v HA u jednotlivých entit?"
+> Odpověď: ne, žádná entita zatím nemá `icon:`, všechny běží na HA/ESPHome
+> default. Lubor chtěl to změnit, navrhl doplnit do stejného draftu (znovu
+> vytažen z `#Archive/`, ne nový soubor).
+
+**Draft & schvalování:**
+- `ADR-005_execution_draft.md` vrácen z `#Archive/` do aktivní složky, doplněn
+  o "Round 2" — návrh ikon pro všech ~35 entit po skupinách (stejný formát
+  jako Round 1), s poznámkou že entity s `device_class:` (Protimrazový režim,
+  4× Porucha čidla) už mají smysluplnou default ikonu.
+- Lubor si při projíždění všiml vedlejšího problému: "Protimrazový režim"
+  zobrazoval v HA stav "Chladno" místo Zapnuto/Vypnuto — root-caused:
+  `device_class: cold` řídí v HA nejen ikonu, ale i sémantický text stavu.
+  Řešeno rovnou (viz níže), než se pokračovalo v ikonách.
+- Lubor upravil pár ikon přímo v tabulkách (Kód chyby → `mdi:alert-circle`
+  místo `-outline`; Stav systému → `mdi:led-on` místo `information-outline`;
+  Topení Chassis → `mdi:heating-coil` místo `radiator`) a odpověděl na 3
+  otevřené otázky: souhlas s návrhy (drobné úpravy), rozlišit raw/used
+  teploty vizuálně (ano), 4× Porucha čidla dostávají `mdi:thermometer-alert`
+  (přepsání "ponechat default" doporučení).
+
+**Implementace (`firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`):**
+- `device_class: cold` odebrán z `bs_heat_mode`, nahrazen `icon:
+  "mdi:snowflake-alert"` — implementováno ihned po nahlášení, samostatný
+  krok před zbytkem ikon.
+- `icon:` doplněn na všech 35 exponovaných entitách dle schváleného draftu
+  (Globální 6, Provoz 8, Nastavení 8, Servisní 13).
+- `esphome compile` — SUCCESS po device_class fixu (`config_hash=0xd11e9f4b`)
+  a znovu po všech 35 ikonách (`config_hash=0xb87510a3`).
+- Ověřeno: `grep -c "icon:"` = 36 řádků, z toho 1 falešný pozitiv (slovo
+  "icon:" v komentáři), skutečně 35 atributů = přesně počet exponovaných entit.
+
+**Dokumentace:**
+- `ARCHITECTURE.md` (v1.16): §8 doplněno o Round 2 (ikony) a poznámku o
+  `device_class` vs zobrazovaný stav.
+- Draft opět přesunut do `#Archive/` (stejný soubor, druhé kolo review).
+
+**Bench test (Lubor):** ikony a device_class fix potvrzeny OK. HA napárováno
+a importovalo entity čistě, bez zjevných chyb.
+
+**Otázka mimo scope, zodpovězena:** "udělá se refresh v HA automaticky po
+flash ESP32?" — ano pro reconnect (ESPHome API integrace se sama znovu
+připojí), **ne** pro `name:` rename (ESPHome odvozuje HA `unique_id` z
+`name:`, ne ze stabilního YAML `id:` — rename po HA go-live by vytvořil
+osiřelou starou entitu + novou vedle; netýká se tohohle projektu, protože
+HA nebyla připojená před ADR-005 renamem). Zapsáno jako Poučení #2 v
+ADR-005+ návrhu (viz níže).
+
+**Co zbývá k dokončení SW prací (Lubor se zeptal):** zkontrolován celý
+aktivní BACKLOG — nic není akcionovatelné teď, vše čeká na Field Deployment
+(OI7) nebo zimní pozorování (OI15/16/19/20, B-VALID-01/02/03). Softwarová
+práce pro `ROADMAP.md` Fáze 1-3 je hotová.
+
+**Dokumentační úklid (na žádost Lubora — "projdi všechny dokumenty křížově,
+nesahali jsme na README a structure dlouho"):**
+- `README.md` — zásadní rewrite: T2 "Evaporator"→"Gas Inlet", Dynamic Polling
+  Strategy (starý 60s/5s/20s model → aktuální 20s/5s, žádný median filtr),
+  DEFROST_ORDERED (chyběla 3. podmínka HEAT_MODE armed, ADR-009), Heater
+  Activation (starý fixní 10/15 min model → floor/ceiling, ADR-007/008), ERR
+  LED sekce (starý show_error_code mechanismus → led_sequencer/ADR-004, 5
+  kódů), přidána chybějící WD LED sekce (nebyla v README vůbec), HA
+  Integration sekce (stará anglická entity_id → odkaz na ADR-005 CZ
+  grouping).
+- `ROADMAP.md` (v1.2) — Fáze 1-3 označeny Done (byly "Active"/"Planned" i
+  přes reálné dokončení), aktuální fáze přepnuta na 4 (Field Deployment),
+  nová Definition of Done.
+- `PROJECT_VISION.md` (v1.2) — fázová tabulka sladěna s ROADMAP.md (musí
+  dle vlastního pravidla dokumentu zůstat v souladu), oprava stale "teplota
+  výparníku"→"teplota plynového vývodu" (ADR-011) a popisu heater timingu.
+- `ARCHITECTURE.md` (v1.17) — hlavičkové "Aktuální stav"/"Phase" opraveny ze
+  stale "Phase 1 — Doc-sync & Code Review, ChatGPT/pre-review éra" (i přes
+  bench-validovaný, HA-napárovaný stav) na Phase 4.
+- `BACKLOG.md` — stale úvodní řádek "Naplní se výstupem code review
+  (plánováno jako navazující session)" (code review dávno proběhl) nahrazen
+  aktuálním stavem.
+- `TEST_PLAN.md` — přidána poznámka o vývoji názvosloví entit napříč fázemi
+  (starší kroky odkazují na "Sim Evaporator"/anglické názvy z doby před
+  ADR-011/ADR-005 — historický text ponechán, jen vysvětleno, jak se to
+  jmenuje dnes). "Výsledek session" rozšířen o S12-S15 dodatek (Fáze 8/9/10).
+- `Software_DevDoc_structure.md` — nová kategorie "Awaiting Architekt" pro
+  `ADR-005-plus_proposal_draft.md` (viz níže), pattern working-draftů
+  doplněn o poznámku.
+- `WORKING_AGREEMENT.md`, `PROJECT_VISION.md` (kromě fázové tabulky),
+  `Prompts/*.md` — zkontrolovány, žádná stale reference nenalezena (procesní
+  dokumenty, ne status snapshoty, míň náchylné na zastarání).
+- `HANDOVER_20260801.md` — kompletní refresh (byl stale od S11), pokrývá
+  celý S12-S15 rozsah.
+
+**ADR-005+ návrh (na žádost Lubora):** nový soubor
+`ADR-005-plus_proposal_draft.md` — Implementer návrh (ne ADR, CC ADR nepíše
+sám), čeká na Architekta. Obsahuje: (1) doporučení, aby budoucí HA
+entity-exposure ADR rovnou specifikovala device grouping + ikony + explicitní
+`device_class` audit, (2) čtyři poučení z procesu — `device_class` dual role
+(ikona i text stavu), entity rename před HA go-live (jinak osiřelé entity),
+event-driven refresh dedup rozdíl binary_sensor vs. sensor/text_sensor
+(BUG-007), dvoukolový draft-review vzor se osvědčil pro plošné zásahy.
+Zapsán do `BACKLOG.md` Aktivní jako jediná položka nezávislá na field/zimě.
+
+**Session S15 uzavřena.** Bench potvrzeno (ikony, device_class fix, HA
+import). Dokumentační úklid dokončen napříč celým `docs/Software_DevDoc/` +
+`README.md`. Projekt ve Fázi 4 (Field Deployment) — žádná další softwarová
+práce není akcionovatelná do fyzické montáže nebo zimního pozorování.
+
+---
+
+## S14 — 2026-08-01 (Implementer/CC) — ADR-005 execution: entity rename + device grouping
+
+> Lubor: "chceš udělat ADR-005 sám, nebo je to session na Architekta...?"
+> Vysvětleno: ADR-005 je Accepted už od S2 (stejný precedent jako ADR-004),
+> Implementer smí exekuci realizovat přímo bez dalšího Architekt kola — jen
+> žádný nový návrh, jen realizace už schváleného. Lubor souhlasil, s tím, že
+> chce nejdřív vidět a schválit konkrétní návrh (šablona Garage_Windows).
+
+**Draft & schvalování:**
+- Vytvořen `ADR-005_execution_draft.md` — crosscheck tabulka entita-po-entitě
+  (~38 entit), návrh device grouping (Globální/Provoz/Nastavení/Servisní,
+  Lubor navrhl skupiny sám), CZ názvy, 5 otevřených otázek.
+- Lubor upravil přímo v souboru: souhlas s grouping, raw i used teploty
+  zůstávají exponované obě, rezervované piny (DI1/DI2/DO3/DO4) neexponovat,
+  "Stav systému" stavy anglicky (`OFF`/`IDLE`/`ARMED`/`Heater ON` — Windows
+  precedent: CZ jméno entity, anglické stavové hodnoty), CZ názvy upravené
+  přímo v tabulkách (několik zpřesnění: "Teplota výměníku" místo "Teplota
+  plyn. vývodu", "Protimrazový režim" místo "Mrazový režim" atd.).
+
+**Implementace (`firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`):**
+- `esphome: devices:` — 4 skupiny (`globalni`/`provoz`/`nastaveni`/`servisni`).
+- `device_id:` přidáno na všech 35 exponovaných entitách (4 raw senzory, 4
+  used senzory, uptime, 2 text_sensory, 8 binary_sensorů, 6 switchů, 12
+  number entit). Rezervované (`di1_in`/`di2_in`/`sw_do3`/`sw_do4`) beze změny
+  — `internal: true`, žádný `device_id:` (dle Windows precedentu — interní
+  entity ho taky nemají).
+- `name:` přejmenováno na CZ na všech exponovaných entitách dle schváleného
+  draftu. YAML `id:` (interní reference) beze změny — jen kosmetické riziko
+  bez přínosu, zůstávají anglické.
+- **Nová entita** `sensor_system_state` ("Stav systému", text_sensor,
+  `device_id: globalni`) — ADR-005 bod 3, dosud neexistovala. Zrcadlí WD LED
+  selector lambdu (stejná priorita: disabled > defrost > armed > idle) jako
+  čitelný text. Refresh napojen na existující WD LED 500ms interval
+  (`component.update: sensor_system_state` přidáno vedle `set_pattern` volání)
+  — žádný nový samostatný refresh mechanismus, recykluje už otestovaný tik.
+- `esphome compile` — SUCCESS, `config_hash=0xf100cdbd`, Flash 946015/1835008 B,
+  RAM 35760/327680 B.
+- Ověřeno skriptem: všechny exponované entity mají `device_id:`, jen
+  DI1/DI2/Aux DO3/DO4 ho záměrně nemají.
+
+**Dokumentace:**
+- `ARCHITECTURE.md` (v1.14): nová §8 (HA Entity Exposure & Device Grouping),
+  §3/§3.2/§5 přepsány na CZ názvy, zmíněna nová `sensor_system_state`.
+  `DECISIONS.md` beze změny (ADR-005 text zůstává historický záznam
+  rozhodnutí, stejný precedent jako ADR-004 — exekuce se netextuje zpátky do
+  ADR těla, žije v SESSION_LOG/BACKLOG).
+- `BACKLOG.md`: nový řádek "ADR-005" v Done.
+- Draft (`ADR-005_execution_draft.md`) přesunut do `#Archive/` na výslovnou
+  žádost Lubora (nemazat).
+
+**Bench test (Lubor):** hlásil, že nová entita "Stav systému" se v logu
+publikuje několikrát za sekundu, zaplevuje log.
+
+**BUG-007 nalezen a opraven:** root cause — refresh byl navázaný na 500ms WD
+LED interval (`component.update: sensor_system_state` vedle `set_pattern()`),
+ale `text_sensor::publish_state()` na rozdíl od `binary_sensor` nededupuje,
+takže se to publikovalo 2×/s bez ohledu na skutečnou změnu. Opraveno na
+event-driven refresh: `sw_main_system_enable` turn_on/turn_off_action,
+`sw_heater_chassis`/`sw_heater_drain` on_turn_on/on_turn_off, `bs_heat_mode`
+on_state:, plus `on_boot:` safety net (stejný vzor jako OI17). `esphome
+compile` — SUCCESS, `config_hash=0xc3f55ee0`. Detaily: `BUGS.md` BUG-007.
+`ARCHITECTURE.md` (v1.15) a `TEST_PLAN.md` Fáze 10 aktualizovány.
+
+**Session S14 uzavřena.** Tímto je hotovo vše z aktivního backlogu kromě
+zimou/field podmíněných položek (OI15/16/19, B-VALID-01/02/03) a OI7 (před
+Field Deployment). Čeká na bench potvrzení BUG-007 fixu.
+
+---
+
 ## S13 — 2026-08-01 (Implementer/CC) — OI13 + OI14: drobný úklid
 
 > Lubor: "Jaký je další plán prací? Můžeme ještě pokračovat a commitnout

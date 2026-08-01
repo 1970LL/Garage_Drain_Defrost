@@ -8,6 +8,49 @@
 
 ## Bugs
 
+### BUG-007 — "Stav systému" (sensor_system_state) zaplevuje log, publikuje několikrát za sekundu
+
+**Nalezeno:** S14, 2026-08-01, bench test po ADR-005 execution (nová entita "Stav
+systému", TEST_PLAN.md Fáze 10)
+**Nahlásil:** Lubor
+
+**Příznak:** Nová entita "Stav systému" se v logu publikuje opakovaně, několikrát
+za sekundu, nezávisle na tom, jestli se stav skutečně změnil.
+
+**Root cause:** Implementer napojil refresh `sensor_system_state` na existující
+WD LED `interval: 500ms` blok (`component.update: sensor_system_state` vedle
+`set_pattern()` volání) — pohodlné znovupoužití už otestovaného tiku, ale
+`text_sensor::TextSensor::publish_state()` (na rozdíl od `binary_sensor`, který
+dedupuje — ověřeno empiricky přes celou tuhle session, žádný binary_sensor log
+řádek se nikdy needuplikoval beze změny) **nededupuje** — `component.update()`
+na PollingComponentu vždy znovu vyhodnotí lambdu a vždy zavolá `publish_state()`,
+bez ohledu na to, jestli se vrácený string liší od předchozího. Výsledek: 2×/s
+publikace navěky, i když se `main_on`/`heater_on`/`heat_armed` neměnily.
+
+**Oprava:** Odstraněno `component.update: sensor_system_state` z 500ms
+intervalu. Nahrazeno skutečně event-driven refreshem — `component.update:`
+zavěšeno přímo na tři body, kde se vstupy opravdu mění:
+- `sw_main_system_enable` `turn_on_action`/`turn_off_action`
+- `sw_heater_chassis`/`sw_heater_drain` `on_turn_on:`/`on_turn_off:`
+- `bs_heat_mode` `on_state:` (binary_sensor dedupuje, bezpečné)
+
+Plus `on_boot:` safety net (stejný vzor jako OI17 `_used` senzory) pro
+zaručenou počáteční hodnotu, i kdyby žádný z triggerů nestihl proběhnout hned
+po startu. `esphome compile` — SUCCESS, `config_hash=0xc3f55ee0`.
+
+**Status:** Opraveno, čeká na bench potvrzení (TEST_PLAN.md Fáze 10).
+
+**Poučení (AP kandidát?):** "Znovupoužít existující interval, je to jen jeden
+řádek navíc" je lákavá zkratka, ale je bezpečná jen pro entity, jejichž
+`publish_state()` sám dedupuje (binary_sensor — ověřeno v tomhle projektu
+opakovaně). Pro `sensor`/`text_sensor` (nededupují, viz i BUG-003/OI17 —
+`Gas Inlet Temperature` v logu vždy re-publikuje identickou hodnotu na
+každém pollu) je nutné navázat refresh na skutečnou změnu zdroje
+(`on_value:`/`on_state:`/přímé volání v akci), ne na sdílený timer — přesně
+vzor, který OI17/OI13 už zavedly, jen jsem ho tady nedodržel důsledně.
+
+---
+
 ### BUG-001 — Main System Enable / Simulation Mode se resetují na OFF po každém rebootu
 
 **Nalezeno:** S5, 2026-07-28, bench test na hotovém HW (TEST_PLAN.md Fáze 2, krok
@@ -418,6 +461,6 @@ lokalizovaná chyba.
 
 ---
 
-*Poslední BUG: BUG-006. Příští číslo: BUG-007.*
+*Poslední BUG: BUG-007. Příští číslo: BUG-008.*
 *Poslední AP: AP-001. Příští číslo: AP-002.*
 *Poslední AP: žádný. Příští číslo: AP-001.*
