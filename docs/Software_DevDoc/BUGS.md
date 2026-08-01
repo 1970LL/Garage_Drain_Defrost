@@ -378,10 +378,46 @@ jestli filtr vůbec dává smysl, než ho přidat "pro jistotu".
 
 ## Anti-patterny (AP-NNN)
 
-*(zatím žádné, projektově specifické — obecné AP-COM-* pro komunikaci s AI viz
-WORKING_AGREEMENT.md §6)*
+### AP-001 — Tvrdý HW reset obchází graceful NVS sync, `restore_value` může ztratit poslední změnu
+
+**Nalezeno:** S12, 2026-08-01, bench test OI17/OI4 (boot chování se Simulation Mode)
+**Nahlásil:** Lubor
+
+**Kontext:** `esp32: preferences:` (auto-loaded komponenta, `flash_write_interval`
+default **60s** — `esphome/components/preferences/__init__.py:16`, YAML tuhle
+hodnotu nikde nepřepisuje) ukládá `restore_value: true` entity/globály jen do
+RAM cache (`ESP32PreferenceBackend::save()`, `esp32/preferences.cpp:40-54`).
+Fyzický zápis do NVS flash provede až `sync()` — buď periodicky (každých 60s),
+nebo při **graceful** shutdownu (`on_shutdown()`: OTA reflash, HA "Restart"
+tlačítko, `api.reboot`). Fyzické EN/RESET tlačítko na ESP32 devkitu (mimo GPIO
+mapu projektu — přímo na chip reset lince, ne ESPHome `button:`) je elektricky
+identické s výpadkem napájení: žádný firmware kód neproběhne, `on_shutdown()`
+nemá šanci se zavolat. Pokud se stav (Simulation Mode, prahy, sim slidery, ...)
+změní méně než `flash_write_interval` před tvrdým resetem/výpadkem, změna se
+ztratí — zařízení po bootu ukáže poslední **skutečně do flash zapsanou**
+hodnotu, ne poslední nastavenou.
+
+**Ověřeno na logu:** `'Simulation Mode' >> OFF` v `11:27:46.619`, tvrdý reset
+(EN tlačítko) v `11:28:02.193` — odstup jen ~15,5s, dobře pod 60s oknem. Po
+bootu Simulation Mode = ON (stará hodnota, ne OFF). Lubor potvrdil: reset
+tlačítkem **několik minut** po přepnutí → OFF správně přežije (sync stihl
+proběhnout mezitím).
+
+**Rozhodnutí (Lubor, 2026-08-01):** Ponecháno beze změny — `flash_write_interval:
+60s` je pro reálný provoz v pořádku (tvrdé resety/výpadky napájení jsou v poli
+vzácné). Při bench testování je třeba tohle chování respektovat: buď počkat
+60s+ po změně stavu před tvrdým resetem, nebo použít graceful reboot (HA/API
+"Restart"), pokud má stav přežít okamžitě.
+
+**Poučení:** `restore_value: true` negarantuje přežití *poslední* změny přes
+*jakýkoli* restart — jen přes restarty, které buď proběhly graceful, nebo
+nastaly po uplynutí `flash_write_interval` od poslední změny. Týká se všech
+restore_value entit v projektu (Main System Enable, Simulation Mode, prahové
+hodnoty, sim slidery), ne jen jedné — obecná vlastnost mechanismu, ne
+lokalizovaná chyba.
 
 ---
 
 *Poslední BUG: BUG-006. Příští číslo: BUG-007.*
+*Poslední AP: AP-001. Příští číslo: AP-002.*
 *Poslední AP: žádný. Příští číslo: AP-001.*

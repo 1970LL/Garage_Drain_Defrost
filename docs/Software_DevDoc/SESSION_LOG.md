@@ -4,6 +4,140 @@
 
 ---
 
+## S13 — 2026-08-01 (Implementer/CC) — OI13 + OI14: drobný úklid
+
+> Lubor: "Jaký je další plán prací? Můžeme ještě pokračovat a commitnout
+> společně?" Navazuje na dohodnutý plán ze S11/S12 — OI13 + OI14 byly
+> další v pořadí.
+
+**OI13** — nabídnuty dvě možnosti (zkrátit interval na 20s / event-driven
+`on_value:` na error binary_sensorech), Lubor souhlasil s návrhem
+(event-driven). Implementováno:
+- `sensor_error_status` (text_sensor): `update_interval: 60s` → `never`.
+- Pěti error binary_sensorům (`bs_err_wifi_lost`/`bs_err_t1..4`) přidán
+  `on_state:` → `component.update: sensor_error_status` (binary_sensor má
+  trigger `on_state:`, ne `on_value:` jako sensor/number — první pokus s
+  `on_value:` selhal na `esphome compile` s jasnou chybou "Did you mean
+  on_state?", opraveno).
+
+**OI14** — Lubor sám doplnil `ap_password` do `secrets.yaml` (a navíc
+`web_username`/`web_password`, ale upozornil, že heslo na `web_server` se u
+Garage_Windows nikdy nepodařilo rozjet a stejně se `web_server` před field
+deployment odstraní — OI7 — takže na to vědomě NEPÁLÍM čas, jen `wifi.ap` a
+`ota:`). Implementováno:
+- `wifi.ap`: přidán `password: !secret ap_password`.
+- `ota:`: převeden z flat dict na list syntax (`- platform: esphome`), dle
+  Windows precedentu (`ESP32-D0WD-V3_Gar_Windows_02.yaml:122-124`).
+
+`esphome compile` — SUCCESS, `config_hash=0xd383f3ea`, Flash 942563/1835008 B,
+RAM 35696/327680 B.
+
+`BACKLOG.md`: OI13 + OI14 přesunuty do Done.
+
+**Bench test Fáze 9 (Lubor):** OI13 potvrzeno OK — vynucená chyba, zrušení
+chyby i souběh 2+ chyb se v "Error Status" projeví okamžitě (testováno přes
+Web server, HA ještě není zprovozněná, bude samostatná session). OTA reflash
+(`ota:` list syntax) bez problémů. **Fallback AP heslo netestováno** — nejde
+teď vypnout WiFi na bench setupu, aby AP naskočil; Lubor doplní test, až to
+půjde. Zbylý otevřený checkbox v TEST_PLAN.md Fáze 9, nic blokujícího.
+
+**OI5 (dodatek):** Lubor se zeptal, proč OI5 nejde udělat teď — `Zdroj:
+ADR-005/OI28` byl jen provenience tag (odkud nápad přišel), ne tvrdá závislost
+na ADR-005 execution. OI5 samo rozlišovalo dvě části: "ESP uptime parita"
+(hotová, standalone, žádné přejmenování existujících entit) a "runtime topení"
+(explicitně "odložený nice-to-have" už v původním zápisu). Implementováno:
+- `sensor: platform: uptime` (`uptime_sensor`, "Uptime (s)") — Windows OI28
+  precedent (`ESP32-D0WD-V3_Gar_Windows_02.yaml:558-562`), bez `device_id:`
+  (ten koncept v tomhle projektu ještě neexistuje — přijde s ADR-005).
+- `esphome compile` — SUCCESS, `config_hash=0xabae8da0`.
+- `BACKLOG.md`: OI5 → Done (jen uptime parita). Zbylá "runtime topení" část
+  vydělena jako nová **OI20** (nice-to-have, zůstává otevřená).
+
+**Session S13 uzavřena.** Vše mimo ADR-005 execution (entity rename, CZ
+friendly names, device_id grouping, "Stav systému"/"Kód chyby" text senzory —
+záměrně samostatná session, viz `DECISIONS.md` ADR-005) a zimou/fieldem
+podmíněné položky (OI15/16/19, B-VALID-01/02/03) je hotovo.
+
+---
+
+## S12 — 2026-08-01 (Implementer/CC) — OI17: event-driven `_used` refresh
+
+> Lubor: "OK, pokud to máme pojmenované v backlogu, můžeme pokračovat
+> systematicky... Ano, pojďme na to." Navazuje přímo na diskusi z konce S11
+> (dynamic polling dotaz → OI17 nápad → odsouhlasený event-driven přístup).
+
+**Provedeno:**
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml`:
+  - Čtyři `_used` template senzory: `update_interval: 5s` → `never` (žádný
+    vlastní polling timer).
+  - Čtyři raw `dallas_temp` senzory (`t_outside`/`t_gas_inlet`/`t_chassis`/
+    `t_drain`): přidán `on_value:` → `component.update:` na příslušný `_used`
+    (real mode zdroj, spouští se přesně při skutečné nové hodnotě).
+  - Čtyři `sim_t_*` number entity: přidán `on_value:` → `component.update:`
+    na příslušný `_used` (sim mode zdroj, spouští se okamžitě při posunu
+    slideru v HA, bez čekání na timer).
+  - `esphome:` blok: přidán `on_boot:` (priorita -100) s vynuceným refreshem
+    všech čtyř `_used` — safety net pro edge case, kdy Simulation Mode
+    přežije reboot (`restore_value: true`) a obnovená hodnota number entity
+    sama nevyvolá `on_value:`.
+  - `sim_mode` switch `turn_on_action`/`turn_off_action` (BUG-002/BUG-005 fix)
+    beze změny — samotné přepnutí režimu nemění žádný ze čtyř zdrojů, na
+    které `on_value:` reaguje, takže pořád potřebuje svůj vlastní vynucený
+    refresh.
+  - Zvažována alternativa "mirror raw polling schedule" (dát `_used` stejný
+    20s/5s tier jako raw místo plošných 5s) — zamítnuta: měla by dvě slabiny
+    (možný stejný-tick staleness, protože nic negarantuje pořadí uvnitř
+    jednoho tiku; zpomalila by Simulation Mode odezvu z 5s na 20s bez if/else
+    větve navíc). Event-driven `on_value:` řeší obojí bez té komplikace.
+- `esphome compile` — SUCCESS, `config_hash=0x7ad9dccd`, Flash 941755/1835008 B,
+  RAM 35656/327680 B.
+- `ARCHITECTURE.md` (v1.12): §3.2 přepsáno na nový event-driven mechanismus.
+  §4.1 tabulka globálů opravena (`err_t1_t2_fail`/`err_t3_t4_fail` byly stale
+  od S10/OI11, teď `err_t1..t4`) — nález mimo hlavní scope, opraveno při
+  příležitosti.
+- `BACKLOG.md`: OI17 přesunuto do Done jako "implementováno, čeká na bench
+  potvrzení". ADR-004 řádek opraven (`err_t3`/`err_t4` už nejsou "blokováno
+  na OI1" — bench potvrzeno v S11).
+- `TEST_PLAN.md`: přidána Fáze 8 (OI17 verifikace).
+- **OI4** — prezentovány tři možnosti (ponechat 60s / zkrátit na 20s / plně
+  event-driven `on_value:` na `_used`), Lubor zvolil **zkrátit na 20s**
+  ("konzistence"). Implementováno: T3/T4 `isnan()` check interval 60s→20s,
+  sjednoceno s T1/T2. `esphome compile` — SUCCESS, `config_hash=0xa42c4739`.
+  `ARCHITECTURE.md` §5 tabulka a §3.1 poznámka aktualizovány. `BACKLOG.md`:
+  OI4 přesunuto do Done.
+- `TEST_PLAN.md`: Fáze 8 rozšířena o OI4 verifikaci (fyzické odpojení T3/T4,
+  ověřit `err_t3`/`err_t4` do ~20-25s místo dřívějších ~60-65s).
+
+**Bench test Fáze 8 (Lubor):** OI17 (5s sim refresh, HEAT_MODE/heater fast
+tiery) i OI4 (`err_t3`/`err_t4` do ~20s) potvrzeny OK. Vedlejší pozorování při
+testu: "Error Status" text_sensor zaostává za `err_t3` binary_sensorem o
+~dvojnásobek jeho vlastního zpoždění — vysvětleno jako **OI13** (`text_sensor`
+má vlastní `update_interval: 60s`, `err_t3` binary_sensor je live), nic nového,
+už v backlogu.
+
+**BUG hlášen a root-caused:** "Simulation Mode = OFF nepřežije reboot, po
+rebootu ON." Log: `'Simulation Mode' >> OFF` v `11:27:46.619`, tvrdý reset
+(fyzické EN tlačítko) v `11:28:02.193` (~15,5s odstup). Root cause: `esp32:
+preferences:` `flash_write_interval` (default 60s, nepřepsáno v YAML) —
+`restore_value` zápisy jdou jen do RAM cache, fyzicky do NVS se zapíšou až
+periodickým `sync()` (60s) nebo při graceful shutdownu. EN tlačítko je
+hardwarový reset (mimo GPIO mapu projektu, přímo na chip reset lince) —
+identické s výpadkem napájení, `on_shutdown()` neproběhne. Lubor potvrdil:
+reset několik minut po přepnutí → OFF správně přežije. Prověřeno, jestli
+"graceful shutdown" na EN tlačítku jde nějak vynutit nastavením — **ne, je to
+hardwarová limitace** (žádný firmware kód neběží při chip-level resetu).
+Nabídnuty možnosti (ponechat 60s / zkrátit `flash_write_interval` / upravit
+test postup) — **Lubor rozhodl ponechat beze změny**, 60s je pro reálný
+provoz v pořádku, testování musí tohle chování respektovat. Zapsáno jako
+**AP-001** (`BUGS.md`, Anti-patterny sekce — systémové chování, ne bug s
+opravou). `TEST_PLAN.md` Fáze 8 doplněna o poznámku.
+
+**Session S12 uzavřena.** Implementace (OI17 + OI4) bench potvrzena, žádná
+regrese. AP-001 zdokumentováno. Další v pořadí dle dohodnutého plánu: OI13 +
+OI14 (drobný úklid).
+
+---
+
 ## S11 — 2026-08-01 (Implementer/CC) — OI1: T3/T4 komisioning
 
 > Lubor: "Nová čidla: T3 - Outdoor unit chassis 0xa90625910004ba28 (DS18B20),

@@ -39,6 +39,7 @@
     "switch",
     "template",
     "text_sensor",
+    "uptime",
     "web_server",
     "web_server_base",
     "web_server_idf",
@@ -53,6 +54,7 @@
     "output/gpio",
     "sensor/dallas_temp",
     "sensor/template",
+    "sensor/uptime",
     "switch/output",
     "switch/template",
     "text_sensor/template"

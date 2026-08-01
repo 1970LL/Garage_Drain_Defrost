@@ -123,6 +123,22 @@ zbylými platnými vzorky v okně, a s `window_size:5`/`send_every:5` a (dřív�
 základ zrychlen na 20s, rychlý tier sjednocen na 5s (T3/T4 měly dřív 20s, což
 bylo po zrychlení základu bezpředmětné). Detaily: `BUGS.md` BUG-006.
 
+**Zvážený, zamítnutý nápad — vzájemný fázový posun mezi senzory (S12, 2026-08-01):**
+Log ukázal, že všechny čtyři raw senzory publikují na svém vlastním pevném
+offsetu uvnitř 20s okna (např. Chassis vždy na `:X7.6`, Outside na `:X0.0`,
+Gas Inlet na `:X0.7`) — dané ESPHome schedulerem (první běh dostane náhodný
+posun 0-5s po bootu, pak periodicky odtud). Není to jitter měnící se cyklus od
+cyklu, jen stabilní stagger. Zvažováno, jestli to představuje riziko "torn
+read" tam, kde logika porovnává dva různé senzory najednou (jediné takové
+místo: DEFROST_ORDERED, `t_gas_inlet_used − t_outside_used`, offset ~0,7s) —
+**zamítnuto jako bezpředmětné**: tepelná setrvačnost potrubí/plechu mění
+teplotu řádově °C/minutu, ne °C/sekundu, takže 0,7s posun představuje
+setiny stupně, hluboko pod `accuracy_decimals: 1` rozlišením senzoru.
+Vynutit skutečnou simultánnost (broadcast convert na 1-Wire) by šlo proti
+poučení z BUG-003 (přerývání convert/read cyklů na sdílené sběrnici
+způsobovalo checksum chyby) — nestojí to za komplikaci, fyzika defrostu to
+nepotřebuje.
+
 ### 3.2 Simulation Layer ("used" sensors)
 
 Nad reálnými senzory existuje indirection vrstva — čtyři `template` senzory
@@ -137,6 +153,29 @@ sim_mode == false → vrací t_outside / t_gas_inlet / t_chassis / t_drain
 **Veškerá řídicí logika (HEAT_MODE, DEFROST_ORDERED) čte výhradně z `_used` senzorů**,
 nikdy přímo z fyzických — to umožňuje testování bez hardwaru.
 
+**OI17 (S12, 2026-08-01) — event-driven refresh:** `_used` senzory mají
+`update_interval: never` — nepollují samy na plochém timeru. Refresh je čistě
+reaktivní, přes `component.update:`:
+
+- `on_value:` na příslušném raw `dallas_temp` senzoru (real mode zdroj) —
+  spustí se přesně, když raw senzor skutečně publikuje novou hodnotu (dle
+  jeho vlastního base/fast-tier intervalu popsaného v §3.1).
+- `on_value:` na příslušné `sim_t_*` number entitě (sim mode zdroj) — spustí
+  se okamžitě při posunu HA slideru, bez čekání na jakýkoli timer.
+- `turn_on_action`/`turn_off_action` na `sim_mode` switchi (BUG-002/BUG-005
+  fix, beze změny) — samotné přepnutí režimu nemění ani raw senzor, ani sim
+  number, takže potřebuje svůj vlastní vynucený refresh.
+- `on_boot:` (priorita -100, `esphome:` blok) — jednorázový vynucený refresh
+  všech čtyř `_used` po startu, pro krajní případ přeživšího Simulation Mode
+  přes reboot (`restore_value: true`), kdy obnovená hodnota number entity
+  nemusí sama vyvolat `on_value:`.
+
+Dřívější plošné `update_interval: 5s` (nezávislé na tom, jestli se zdroj pod
+senzorem skutečně změnil) re-publikovalo nezměněnou hodnotu bez informační
+hodnoty — zaplevňovalo log/HA traffic (OI17 nález, bench test S5). Nový
+mechanismus publikuje přesně tolikrát, kolikrát se zdroj skutečně změní, a
+navíc rychleji (žádné čekání na příští poll tick).
+
 ---
 
 ## 4. Řídicí logika
@@ -149,8 +188,10 @@ nikdy přímo z fyzických — to umožňuje testování bez hardwaru.
 | `sim_mode_state` | bool | ano (false) | Simulační režim |
 | `defrost_running` | bool | ne | Právě probíhá defrost cyklus |
 | `err_wifi_lost` | bool | ne | WiFi chyba (debounced) |
-| `err_t1_t2_fail` | bool | ne | Chyba T1/T2 senzoru |
-| `err_t3_t4_fail` | bool | ne | Chyba T3/T4 senzoru |
+| `err_t1` | bool | ne | Chyba T1 senzoru (outside) |
+| `err_t2` | bool | ne | Chyba T2 senzoru (gas inlet) |
+| `err_t3` | bool | ne | Chyba T3 senzoru (chassis) |
+| `err_t4` | bool | ne | Chyba T4 senzoru (drain) |
 | `wifi_lost_duration_sec` | uint32 | ne | Debounce čítač pro WiFi chybu |
 
 ### 4.2 HEAT_MODE (binary_sensor, hystereze)
@@ -241,10 +282,12 @@ falešnou chybu na fyzicky nepřipojeném T3/T4, dokud je `sim_mode` ON):
 | `err_wifi_lost` | `wifi.connected` == false | 300 s (5 min) souvislého výpadku |
 | `err_t1` | `isnan()` na `t_outside_used` | kontrola každých 20 s |
 | `err_t2` | `isnan()` na `t_gas_inlet_used` | kontrola každých 20 s |
-| `err_t3` | `isnan()` na `t_chassis_used` | kontrola každých 60 s, informativní (ne kritické) |
-| `err_t4` | `isnan()` na `t_drain_used` | kontrola každých 60 s, informativní (ne kritické) |
+| `err_t3` | `isnan()` na `t_chassis_used` | kontrola každých 20 s, informativní (ne kritické) |
+| `err_t4` | `isnan()` na `t_drain_used` | kontrola každých 20 s, informativní (ne kritické) |
 
-Obě kontroly mají 10s startup grace po bootu (BUG-004).
+Obě kontroly mají 10s startup grace po bootu (BUG-004). T3/T4 interval
+sjednocen z 60s na 20s (OI4, S12 2026-08-01) pro konzistenci s T1/T2, po
+OI17/BUG-006 už není důvod, aby zaostávaly.
 
 **ERR LED (GPIO2)** — `led_sequencer` (ADR-004, portováno z Garage_Windows beze
 změny enginu, OI10), instance `err_led_seq`. Deklarativní patterny, "default"
@@ -326,3 +369,5 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 | 1.9 | 2026-07-31 | §2.2/§5 přepsány dle ADR-004 — `led_sequencer` portován (OI10), nahradil ruční `show_error_code` script a WD 1s heartbeat interval; `err_t1_t2_fail`/`err_t3_t4_fail` rozděleny na per-senzor `err_t1..err_t4` čtoucí `_used` vrstvu (OI11 vyřešeno). S10 (Implementer). |
 | 1.10 | 2026-07-31 | §3/§3.1 přepsány dle BUG-006 — median filtr zakomentován na všech 4 DS18B20 senzorech (maskoval selhání senzoru až 10-20 min), základní `update_interval` 120s→20s, rychlý tier sjednocen na 5s (T3/T4 z dřívějších 20s). S10 (Implementer). |
 | 1.11 | 2026-08-01 | §3/§7: reálné adresy T3 (`t_chassis`) = `0xa90625910004ba28`, T4 (`t_drain`) = `0xb6062591abac6f28` komisionovány na hotovém HW (test01 bring-up), TODO/placeholder odstraněno pro obě — OI1 kompletně vyřešeno. S11 (Implementer). |
+| 1.12 | 2026-08-01 | §3.2 přepsáno dle OI17 — `_used` senzory `update_interval: never`, refresh čistě event-driven (`on_value:` na raw senzorech/sim number entitách + `on_boot:` safety net), nahradilo plošné `update_interval: 5s`. §4.1 tabulka globálů opravena (`err_t1_t2_fail`/`err_t3_t4_fail` byly stale od ADR-004/OI11 splitu, teď `err_t1..t4`). §5 tabulka opravena dle OI4 (T3/T4 error-check 60s→20s). S12 (Implementer). |
+| 1.13 | 2026-08-01 | §3.1 doplněna poznámka o zváženém a zamítnutém nápadu (fázový posun mezi senzory na sdíleném 1-Wire, "torn read" riziko v DEFROST_ORDERED — zamítnuto, tepelná setrvačnost dominuje). S12 (Implementer). |

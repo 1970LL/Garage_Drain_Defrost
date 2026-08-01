@@ -251,6 +251,67 @@
       (ne 10-20 min)
 - [✅] Zkontrolovat log — žádné odkazy na starý (odstraněný) `show_error_code`
 
+## Fáze 8 — OI17 + OI4: Event-driven `_used` refresh, sjednocený error-check interval
+
+> `_used` senzory už nepollují na plochém 5s timeru (`update_interval: never`) —
+> refresh je čistě reaktivní (`on_value:` na raw senzoru / sim number entitě +
+> `on_boot:` safety net). T3/T4 `isnan()` error-check interval zkrácen 60s→20s
+> (OI4, sjednoceno s T1/T2). Ověřit, že logika zůstává funkčně stejná (jen
+> rychlejší/úspornější), žádná regrese.
+
+**OI4 (T3/T4 error-check interval):**
+- [✅] Fyzicky odpojit T3 (chassis) datový vodič — `err_t3` se spustí do ~20-25s
+      (dřív bylo ~60-65s)
+- [✅] Totéž pro T4 (drain) → `err_t4` do ~20-25s
+
+**Real mode (Simulation Mode OFF):**
+- [✅] Sledovat log po dobu ~2 min — "(used)" senzory se v logu objeví přesně
+      při publikaci odpovídajícího raw senzoru (ne na nezávislém 5s tiku),
+      žádné duplicitní/nezměněné re-publikace mezi tím
+- [ ] HEAT_MODE ON (T2 fast tier 5s aktivní) → "Gas Inlet Temperature (used)"
+      se aktualizuje ~současně s "Gas Inlet Temperature" (raw), s minimálním
+      zpožděním
+- [ ] Heater ON (T3/T4 fast tier 5s aktivní) → totéž pro Chassis/Drain (used)
+
+**Sim mode (Simulation Mode ON):**
+- [✅] Posunout "Sim Outside" slider v HA → "Outside Temperature (used)" se
+      aktualizuje **okamžitě** (do ~1s), ne až po zpoždění
+- [✅] Totéž pro Sim Gas Inlet/Chassis/Drain
+- [✅] Přepnout Simulation Mode ON→OFF→ON několikrát (BUG-002/BUG-005 regrese)
+      s T1/T2 teplými a T3/T4 NaN — ověřit, že se **ani jednou** nespustí
+      heater, pokud reálně DEFROST_ORDERED nesplňuje podmínku (stejný test
+      jako Fáze 7, jen na nové `_used` mechanice)
+
+**Boot chování:**
+- [✅] Reboot v real mode — "(used)" senzory přestanou být `unavailable` do
+      ~1 poll intervalu raw senzoru (stejně jako dřív, žádná regrese)
+- [✅] Reboot se Simulation Mode ON (přeživší `restore_value: true`) — ověřit,
+      že se "(used)" senzory správně naplní sim hodnotami (testuje `on_boot:`
+      safety net)
+  > 🔍 **AP-001 nalezeno zde (2026-08-01):** Simulation Mode = OFF nepřežilo
+  > tvrdý reset (fyzické EN tlačítko) provedený ~15s po přepnutí — po bootu
+  > ON (stará hodnota). Root cause: `flash_write_interval` (default 60s) —
+  > EN tlačítko je hardwarový reset, `on_shutdown()` (graceful NVS sync)
+  > neproběhne. Lubor potvrdil: reset několik minut po přepnutí → OFF správně
+  > přežije. **Není bug, systémové chování** — viz `BUGS.md` AP-001. Při
+  > testu boot chování buď počkat 60s+ po změně stavu před tvrdým resetem,
+  > nebo použít graceful reboot (HA/API "Restart").
+
+## Fáze 9 — OI13 + OI14: Error Status event-driven, wifi.ap password
+
+- [✅] Vynutit libovolnou chybu (např. `err_t1`) → "Error Status" text ve Web serveru se
+      změní **okamžitě** (do ~1s), ne až po zpoždění do 60s
+- [✅] Chybu zrušit → "Error Status" se vrátí na "OK" stejně rychle
+- [✅] Vynutit 2+ chyby najednou → "Error Status" ukáže obě, comma-separated
+      (regrese, beze změny logiky stringu)
+- [ ] Ověřit v logu/HA, že fallback AP (`wifi.ap`, SSID viz `fallback` secret)
+      teď vyžaduje heslo pro připojení (mimo běžný provoz — jen pokud WiFi
+      selže a AP se aktivuje)
+- [✅] `esphome compile`/OTA reflash proběhne bez problémů (ověřuje `ota:` list
+      syntax nezpůsobil regresi)
+- [ ] "Uptime (s)" entita se objeví ve Web serveru/HA a roste (OI5) — po
+      rebootu od 0, ne `unavailable`
+
 ---
 
 ## Výsledek session (S5–S11, kompletní vč. T3/T4)

@@ -4,6 +4,9 @@
 #     filter, BUG-006 — these sensors don't drift/spike)
 #  2) Simulation mode (override temperatures from UI/HA without recompiling)
 #     -> "(used)" sensors feed the logic (real vs simulated values)
+#     -> OI17: "(used)" sensors are event-driven (update_interval: never),
+#        refreshed via on_value: from the raw sensor / sim number that feeds
+#        them, instead of polling independently on a flat timer
 #  3) ERROR DETECTION SYSTEM with WiFi & sensor failure monitoring
 #     -> 5-minute WiFi filter (ignores brief glitches)
 #     -> Concurrent error exposure to HA
@@ -16,6 +19,18 @@ esphome:
   friendly_name: "Garage Drain Defrost"
   comment: !secret device_comment
   build_path: "D:/Code/VSCode_Programs/ESP32/GARAGE_DRAIN_DEFROST/firmware/.esphome"
+  # OI17 safety net: force one refresh of all four "(used)" sensors after boot.
+  # Normally unnecessary — the raw sensors' own first publish (on_value:) does
+  # this within seconds of boot — but covers the edge case where Simulation
+  # Mode survived a reboot (restore_value: true on sim_mode_state/sim_mode)
+  # and a restored sim_t_* number doesn't itself fire on_value: on restore.
+  on_boot:
+    priority: -100
+    then:
+    - component.update: t_outside_used
+    - component.update: t_gas_inlet_used
+    - component.update: t_chassis_used
+    - component.update: t_drain_used
 
 esp32:
   board: esp32dev
@@ -38,7 +53,7 @@ api:
   reboot_timeout: 0s
 
 ota:
-  platform: esphome
+- platform: esphome
   password: !secret ota_password
 
 wifi:
@@ -52,6 +67,7 @@ wifi:
     dns1: !secret dns1
   ap:
     ssid: !secret fallback
+    password: !secret ap_password
 
 # Web UI for quick checks & simulation controls
 web_server:
@@ -142,12 +158,17 @@ sensor:
 # err_t1..t4. These sensors (outdoor/HVAC/chassis/drain temps) don't drift or
 # spike — filtering wasn't buying anything here, just delaying failure
 # detection. Re-enable (uncomment) if field data shows real read noise.
+# OI17 (S12, 2026-08-01): each raw sensor pushes its "(used)" counterpart via
+# on_value: right when it actually publishes, instead of the used sensor
+# polling independently every 5s regardless of whether the source changed.
 - platform: dallas_temp
   address: 0x3400000051876f28 # commissioned S5 2026-07-28 (test01 HW bring-up)
   name: "Outside Temperature"
   id: t_outside
   update_interval: 20s
   accuracy_decimals: 1
+  on_value:
+  - component.update: t_outside_used
   # filters:
   #   median:
   #     window_size: 5
@@ -166,6 +187,8 @@ sensor:
   id: t_gas_inlet
   update_interval: 20s
   accuracy_decimals: 1
+  on_value:
+  - component.update: t_gas_inlet_used
   # filters:
   #   median:
   #     window_size: 5
@@ -180,6 +203,8 @@ sensor:
   id: t_chassis
   update_interval: 20s
   accuracy_decimals: 1
+  on_value:
+  - component.update: t_chassis_used
   # filters:
   #   median:
   #     window_size: 5
@@ -194,6 +219,8 @@ sensor:
   id: t_drain
   update_interval: 20s
   accuracy_decimals: 1
+  on_value:
+  - component.update: t_drain_used
   # filters:
   #   median:
   #     window_size: 5
@@ -202,6 +229,17 @@ sensor:
 
     # "USED" sensors: logic consumes these; they switch between real & simulated
     # values depending on Simulation Mode.
+    #
+    # OI17 (S12, 2026-08-01): `update_interval: never` — these no longer poll on
+    # their own flat timer. Each one is refreshed exclusively by
+    # `component.update:` triggers: on_value: on its raw dallas_temp counterpart
+    # (real mode source, see sensor: above) and on_value: on its sim_t_* number
+    # counterpart (sim mode source, see number: below), plus the sim_mode
+    # turn_on/turn_off_action forced refresh (BUG-002/BUG-005, unchanged — the
+    # mode flip itself doesn't change either underlying source value, so it
+    # still needs its own explicit refresh). This closes the old gap where a
+    # blanket 5s poll kept re-publishing an unchanged value regardless of
+    # whether the source underneath had actually changed.
     #
     # BUG-005: read the global `sim_mode_state` directly, NOT `id(sim_mode).state`
     # (the switch's own published/derived state). `sim_mode` is `optimistic: false`
@@ -221,12 +259,17 @@ sensor:
     # still holding a stale ~30°C real reading for 5s after 'Outside Temperature
     # (used)' had already jumped to a fresh ~1.5°C sim reading, spuriously
     # satisfying DEFROST_ORDERED. See BUGS.md BUG-005.
+    # (Note: the "uncoordinated 5s pollers" this fix closed the race against no
+    # longer exist post-OI17 — the four `_used` sensors are now event-driven,
+    # see comment above. This fix is still required regardless: the mode flip
+    # itself still needs its own forced, synchronous refresh, since it doesn't
+    # change any of the four source values on_value: reacts to.)
 - platform: template
   name: "Outside Temperature (used)"
   id: t_outside_used
   unit_of_measurement: "°C"
   accuracy_decimals: 1
-  update_interval: 5s
+  update_interval: never
   lambda: |-
     if (id(sim_mode_state)) {
       return id(sim_t_outside).state;
@@ -239,7 +282,7 @@ sensor:
   id: t_gas_inlet_used
   unit_of_measurement: "°C"
   accuracy_decimals: 1
-  update_interval: 5s
+  update_interval: never
   lambda: |-
     if (id(sim_mode_state)) {
       return id(sim_t_gas_inlet).state;
@@ -252,7 +295,7 @@ sensor:
   id: t_chassis_used
   unit_of_measurement: "°C"
   accuracy_decimals: 1
-  update_interval: 5s
+  update_interval: never
   lambda: |-
     if (id(sim_mode_state)) {
       return id(sim_t_chassis).state;
@@ -265,7 +308,7 @@ sensor:
   id: t_drain_used
   unit_of_measurement: "°C"
   accuracy_decimals: 1
-  update_interval: 5s
+  update_interval: never
   lambda: |-
     if (id(sim_mode_state)) {
       return id(sim_t_drain).state;
@@ -273,15 +316,28 @@ sensor:
       return id(t_drain).state;
     }
 
+# OI5 (S13, 2026-08-01): ESP uptime parity, Windows OI28 precedent (ADR-005
+# bod 4 — ESP exposes raw seconds, human-readable d/h/m formatting stays
+# HA-side, not firmware-side). "Runtime topení" (cumulative heater on-time)
+# part of OI5 stays deferred (nice-to-have) — this is just the uptime sensor.
+- platform: uptime
+  name: "Uptime (s)"
+  id: uptime_sensor
+
 # ======================== TEXT SENSORS ========================
 # Human-readable error status for HA dashboard
 # Shows ALL concurrent errors as comma-separated list
-# Update interval: 60s (reduced traffic to HA)
+#
+# OI13 (S13, 2026-08-01): was a flat `update_interval: 60s` poll, up to 60s
+# behind the instant error binary_sensors below. Same event-driven pattern as
+# OI17: `update_interval: never` here, refreshed via `on_value:` on each of
+# the five error binary_sensors (see binary_sensor: below) — zero-lag instead
+# of up-to-60s-lag, and no redundant re-publishes when nothing changed.
 text_sensor:
 - platform: template
   name: "Error Status"
   id: sensor_error_status
-  update_interval: 60s
+  update_interval: never
   lambda: |-
     // Build comma-separated list of ALL active errors
     std::string status = "OK";
@@ -400,35 +456,50 @@ binary_sensor:
 
 # Individual error binary sensors for HA exposure
 # These allow concurrent error detection (all shown independently)
+#
+# OI13 (S13, 2026-08-01): each on_state: pushes a refresh to "Error Status"
+# (sensor_error_status, update_interval: never) right when it actually
+# transitions — same event-driven pattern as OI17. (binary_sensor's trigger is
+# named on_state:, not on_value: like sensor/number.)
 - platform: template
   name: "Error: WiFi Lost"
   id: bs_err_wifi_lost
   device_class: problem
   lambda: 'return id(err_wifi_lost);'
+  on_state:
+  - component.update: sensor_error_status
 
 - platform: template
   name: "Error: T1 Sensor Fail (Outside)"
   id: bs_err_t1
   device_class: problem
   lambda: 'return id(err_t1);'
+  on_state:
+  - component.update: sensor_error_status
 
 - platform: template
   name: "Error: T2 Sensor Fail (Gas Inlet)"
   id: bs_err_t2
   device_class: problem
   lambda: 'return id(err_t2);'
+  on_state:
+  - component.update: sensor_error_status
 
 - platform: template
   name: "Error: T3 Sensor Fail (Chassis)"
   id: bs_err_t3
   device_class: problem
   lambda: 'return id(err_t3);'
+  on_state:
+  - component.update: sensor_error_status
 
 - platform: template
   name: "Error: T4 Sensor Fail (Drain)"
   id: bs_err_t4
   device_class: problem
   lambda: 'return id(err_t4);'
+  on_state:
+  - component.update: sensor_error_status
 
 # Generic error active indicator (any error)
 - platform: template
@@ -768,13 +839,15 @@ interval:
             }
           }
 
-# T3 & T4 sensor validity check (update every 60 seconds)
+# T3 & T4 sensor validity check (update every 20 seconds)
 # Detects NaN or missing sensor responses. ADR-004/OI11: same split + `_used`
-# read as T1/T2 above.
-# Not Critical for safety, informational only
+# read as T1/T2 above. Not critical for safety, informational only — but
+# shortened from 60s to 20s (OI4, S12 2026-08-01) for consistency with T1/T2,
+# now that the underlying raw sensors are equally fast post-BUG-006/OI17
+# (20s base / 5s fast tier + event-driven `_used` refresh either way).
 #
 # BUG-004: same startup-grace fix as the T1/T2 check above.
-- interval: 60s
+- interval: 20s
   then:
   - if:
       condition:
@@ -992,6 +1065,10 @@ number:
   initial_value: 20
 
 # SIMULATION CONTROLS (for testing without hardware)
+# OI17: on_value: pushes a refresh to the matching "(used)" sensor the moment
+# the slider changes — same event-driven pattern as the raw dallas_temp
+# sensors above. Harmless no-op while Simulation Mode is OFF (the "(used)"
+# lambda still reads the real sensor branch in that case).
 # Manual outside temperature (used when sim_mode is ON)
 - platform: template
   name: "Sim Outside (°C)"
@@ -1002,6 +1079,8 @@ number:
   optimistic: true
   restore_value: true
   initial_value: 10
+  on_value:
+  - component.update: t_outside_used
 
 # Manual gas inlet temperature (used when sim_mode is ON)
 - platform: template
@@ -1013,6 +1092,8 @@ number:
   optimistic: true
   restore_value: true
   initial_value: 5
+  on_value:
+  - component.update: t_gas_inlet_used
 
 # Manual chassis temperature (used when sim_mode is ON)
 - platform: template
@@ -1024,6 +1105,8 @@ number:
   optimistic: true
   restore_value: true
   initial_value: 5
+  on_value:
+  - component.update: t_chassis_used
 
 # Manual drain temperature (used when sim_mode is ON)
 - platform: template
@@ -1035,3 +1118,5 @@ number:
   optimistic: true
   restore_value: true
   initial_value: 5
+  on_value:
+  - component.update: t_drain_used
