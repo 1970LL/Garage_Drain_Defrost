@@ -1,9 +1,19 @@
 # ADR-005+ — Návrh doporučení pro budoucí HA entity-exposure práci
 
-> **Status: Návrh Implementera, čeká na Architekta.** Není to ADR — Implementer
-> (CC) ADR nepíše sám (`WORKING_AGREEMENT.md` §1.2). Tohle je vstup pro
-> Architekta k posouzení, jestli si zaslouží formální ADR-012 (nebo dodatek k
-> ADR-005), nebo stačí poznámka do `BACKLOG.md`/`ARCHITECTURE.md`.
+> **Status: Resolved (S16, 2026-08-01)** → viz **ADR-015** (HA_RD_Jirny repo)
+> + `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md` (tento repo, autoritativní
+> instance dle ADR-015 §1/§6). HA Architekt formalizoval standardní
+> entity-exposure formát (device grouping + ikony + device_class audit jako
+> standardní součást), Garage_Drain_Defrost je druhý worked example (funkční
+> osa) vedle Garage_Windows (fyzická osa). **Tento draft = origin dokument**
+> pro tu destilaci, ponechán jako historický záznam procesu/poučení.
+>
+> ---
+>
+> **Původní status (S15): Návrh Implementera, čeká na Architekta.** Není to
+> ADR — Implementer (CC) ADR nepíše sám (`WORKING_AGREEMENT.md` §1.2). Tohle
+> byl vstup pro Architekta k posouzení, jestli si zaslouží formální ADR-012
+> (nebo dodatek k ADR-005), nebo stačí poznámka do `BACKLOG.md`/`ARCHITECTURE.md`.
 > **Původ:** Lubor po dokončení ADR-005 execution (S14/S15, entity rename +
 > device grouping + ikony) požádal o zachycení doporučení a poučení z procesu,
 > než se ztratí.

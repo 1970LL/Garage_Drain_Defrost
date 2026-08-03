@@ -28,11 +28,16 @@ docs/Software_DevDoc/
 ├── WORKING_AGREEMENT.md           workflow rules, roles, session protocol
 ├── PROJECT_VISION.md              high-level project goals, constraints, quality stance
 │
-├── ── AWAITING ARCHITEKT ────────────────────────────────────────────────────
+├── ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md   HA entity/device grouping map —
+│                                  authoritative instance (ADR-015 §1/§6); HA_RD_Jirny
+│                                  holds only a manually-synced worked-example copy
 │
-├── ADR-005-plus_proposal_draft.md Implementer proposal (not an ADR — CC never
-│                                  writes ADRs, WORKING_AGREEMENT §1.2), awaiting
-│                                  Architekt review/formalization
+├── ── AWAITING ARCHITEKT (currently empty) ─────────────────────────────────
+│
+│   Category for Implementer proposals that aren't ADRs (CC never writes ADRs,
+│   WORKING_AGREEMENT §1.2) — sit here until the Architekt reviews/formalizes
+│   them. Last occupant: ADR-005-plus_proposal_draft.md, resolved S16 (ADR-015),
+│   archived.
 │
 ├── ── SUBFOLDERS ────────────────────────────────────────────────────────────
 │
@@ -52,7 +57,9 @@ docs/Software_DevDoc/
     ├── HANDOVER_20260728.md
     ├── HANDOVER_20260730.md
     ├── HANDOVER_20260731.md
-    └── ADR-005_execution_draft.md  (working draft, see note below)
+    ├── ADR-005_execution_draft.md       (working draft, see note below)
+    └── ADR-005-plus_proposal_draft.md   (resolved S16 → ADR-015, kept as
+                                          historical origin record)
 ```
 
 **Sibling reference material (outside Software_DevDoc/, under `docs/`):** not part
@@ -161,11 +168,8 @@ as-needed rather than upfront:
 
 ---
 
-*Last updated: 2026-08-01 (S15, Implementer, doc-cleanup pass) — #Archive/ now
-also holds a parked working draft (`ADR-005_execution_draft.md`), not just
-superseded HANDOVER/code-review snapshots; documented the pull-back-for-a-
-new-round pattern this draft went through. `BUGS.md` gained its first
-Anti-patterny entry (AP-001) and first entry re-numbered past BUG-006
-(BUG-007). New "Awaiting Architekt" category added — a proposal document
-(`ADR-005-plus_proposal_draft.md`) that isn't a HANDOVER/draft-being-executed,
-just sits until the Architekt reviews it.*
+*Last updated: 2026-08-01 (S16, Implementer) — `ENTITY_EXPOSURE_HA_
+Garage_Drain_Defrost.md` added as a new active document (authoritative HA
+entity/device grouping map, ADR-015). "Awaiting Architekt" category emptied
+— `ADR-005-plus_proposal_draft.md` resolved (ADR-015) and archived alongside
+`ADR-005_execution_draft.md`, both now living in `#Archive/`.*

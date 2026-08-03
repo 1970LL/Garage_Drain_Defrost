@@ -4,6 +4,80 @@
 
 ---
 
+## S16 — 2026-08-01 (Implementer/CC) — ENTITY_EXPOSURE_HA destilace (ADR-015)
+
+> Handoff prompt od HA Architekta (repo HA_RD_Jirny, ADR-015), předaný
+> Luborem: destilovat S14/S15 ADR-005 execution draft do standardního
+> `ENTITY_EXPOSURE_HA` formátu, strukturálně shodného s Garage_Windows
+> template. Garage_Drain_Defrost = druhý worked example (funkční osa) vedle
+> Garage_Windows (fyzická osa). Čistě dokumentační — žádná firmware změna.
+
+**Vlastnictví (ADR-015 §1/§6, precedent ADR-022):** vyplněná entity-exposure
+mapa patří **tomuto** repu, ne HA_RD_Jirny — ten drží jen šablonu + ruční
+synced kopii jako worked example. Handoff explicitně varoval před obráceným
+postupem (chyba, kterou udělala Windows session ADR-022/S43) — čte se
+template z HA repa, ale **píše a commituje se výsledek sem**.
+
+**První krok (potvrzen Luborem):** vypsána strukturní kostra Windows
+template (header → Legenda → Sub-device struktura → per-sub-device tabulky →
+Node → Vyloučené → Rozpory v názvech → Device_class audit → Změny), s
+mapováním na naše 4 funkční skupiny (Provoz/Nastavení/Servisní/Globální —
+Globální poslední, mirror Windows konvence). Otázka k obsahu Vyloučené
+(kam patří Simulation Mode + sim entity) položena a zodpovězena: zůstávají
+exponované v Servisní (na rozdíl od Windows SIM switchů, které jsou
+bench-only/field-comment-out) — plánuje se jejich použití i po field
+deploymentu.
+
+**Zdroje pro obsah:**
+- `#Archive/ADR-005_execution_draft.md` (Round 1 + Round 2) — old→new názvy,
+  grouping návrh, poznámky k rozhodnutím
+- `firmware/yaml/ESP32-D0WD-V3_Gar_Drain_Defrost.yaml` — ground truth pro
+  `id`/`device_class`/`icon`/`name` (ne draft — draft je pracovní historie,
+  YAML je co je reálně nasazené)
+- `ENTITY_EXPOSURE_HA_Garage_Windows.md` (HA_RD_Jirny, READ-ONLY) — struktura
+  k zrcadlení
+
+**Vytvořeno:** `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md` — 39 entit
+zkontrolováno (35 exponovaných rozřazeno do 4 sub-device tabulek + 4
+rezervované v §6 Vyloučené), 1:1 proti YAML. Nové sekce oproti draftu:
+**Úroveň** (Základní/Detailní — Implementer heuristika) a **pořadí řádků**
+(důležitost pro dashboard, taky Implementer návrh).
+§7 Rozpory v názvech — 2 nálezy (`sim_mode` bez `sw_` prefixu; text_sensor
+`sensor_` prefix koliduje vizuálně s `sensor:` doménou), obě kosmetické,
+poslány k rozhodnutí, ne vyřešeny teď (firmware změna = samostatná session).
+§8 Device_class audit — zapsán uzavřený S15 nález (`bs_heat_mode`
+`device_class: cold` → "Chladno" problém, odebráno) + potvrzení, že
+`device_class: problem` na pěti error binary_sensorech zůstává beze změny.
+
+**Archivace:** `ADR-005-plus_proposal_draft.md` označen Resolved → ADR-015 +
+`ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md`, přesunut do `#Archive/`
+(ponechán jako historický origin záznam). `Software_DevDoc_structure.md`:
+"Awaiting Architekt" kategorie vyprázdněna (s vysvětlující poznámkou pro
+budoucí použití, po vzoru `Test Results/`), nová entita v Active Documents,
+`#Archive/` strom doplněn o oba nové archivované soubory.
+
+**Validace:** žádná entita nechybí ani neduplikuje (39 = 35 + 4, počet sedí
+s YAML), markdown tabulky vykreslují, `firmware/**`/`DECISIONS.md`/
+`ARCHITECTURE.md` nedotčeny (mimo scope), nic v repu HA_RD_Jirny nezměněno
+(jen čteno).
+
+**Review Luborem:** požádal o přeřazení v §2 (Nastavení) a §3 (Servisní),
+zbytek dokumentu potvrzen beze změny. Provedeno:
+- §2: pořadí přeskupeno z floor/floor/ceiling/ceiling na group-by-channel
+  — Chassis floor+ceiling (5,6), pak Odtok floor+ceiling (7,8).
+- §3: sim entity (1-5) → poruchy čidel (6-9) → raw čidla (10-13, dřív na
+  začátku) — sim/error nástroje před pasivními raw duplikáty.
+- Odstraněny všechny "DRAFT"/"čeká na review Luborem" formulace (hlavička,
+  Legenda, §9 Změny) — nahrazeny potvrzením, že Úroveň i pořadí prošly S16
+  review.
+- Final check: počty/id/device_class/icon znovu ověřeny proti YAML, křížové
+  odkazy (poznámka "Raw čidla (#10-13)" v §3) zůstávají platné po přeřazení.
+
+**Session S16 uzavřena.** Commit + push jen v tomto repu. Ruční sync kopie
+do HA_RD_Jirny je na Luborovi, po jeho review — mimo scope téhle session.
+
+---
+
 ## S15 — 2026-08-01 (Implementer/CC) — ADR-005 Round 2: entity ikony
 
 > Lubor: "nastavuješ ikony, které se zobrazují v HA u jednotlivých entit?"
