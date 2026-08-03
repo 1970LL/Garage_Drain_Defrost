@@ -8,14 +8,12 @@
 
 ## Aktivní
 
-Skoro vše aktivní k 2026-08-01 (S15) je vázané na Field Deployment (OI7) nebo
-na zimní pozorování reálného provozu (OI15/16/19/20, B-VALID-01/02/03) — nic
-z toho není akcionovatelné dřív, viz `ROADMAP.md` Fáze 4. Jedna výjimka:
-**ADR-005+ návrh** čeká na Architekta kdykoli, není vázán na field/zimu.
+Vše aktivní k 2026-08-01 (S16) je vázané na Field Deployment (OI7) nebo na
+zimní pozorování reálného provozu (OI15/16/19/20, B-VALID-01/02/03) — nic
+z toho není akcionovatelné dřív, viz `ROADMAP.md` Fáze 4.
 
 | ID | Popis | Zdroj | Priorita |
 |---|---|---|---|
-| — | **ADR-005+ návrh** čeká na Architekta — obecná doporučení pro budoucí HA entity-exposure práci (device grouping, ikony, `device_class` audit jako standardní součást zadání) + poučení z procesu (device_class dual role, entity rename před HA go-live, event-driven refresh dedup rozdíl binary_sensor vs. sensor/text_sensor, dvoukolový draft-review vzor). Draft: `docs/Software_DevDoc/ADR-005-plus_proposal_draft.md`. Otázka pro Architekta: formalizovat jako ADR-012, nebo stačí poznámka? | S15, Implementer | Kdykoli, nezávislé na field/zimě |
 | OI7 | web_server (port 80, bez auth): ponechat pro bench ladění, odstranit/zabezpečit až po HA implementaci — Windows precedent (OI26, field build vypíná web_server úplně, HA = sole control plane) | code review S3 | Před Field Deployment |
 | OI15 | ADR-008 bod 8 (akceptované omezení): retrigger resetuje rozpočet stropu — podmínka kmitající rychleji než floor může topení protahovat neomezeně, ceiling chrání jen proti zaseknuté podmínce, ne kmitající. Řešení až při výskytu: nezávislý absolutní max on-time neresetovaný retriggerem (precedent Garage_Windows ERR8/OI25, `max_on_time_ms`). **ADR-010:** samoregulační kabel je fail-safe proti přehřátí; guard už není ochrana proti přehřátí, jen proti plýtvání energií — priorita snížena. | ADR-008 bod 8, ADR-010 | Nice-to-have (bylo: Hardening) |
 | OI16 | Per-surface freeze gate: zvážit gate topení na měřený povrch (t_chassis_used/t_drain_used ≤ th) místo/vedle HEAT_MODE proxy — přesnější, ale +entita a NaN fail-safe policy. | ADR-009 | Odloženo — po zimním field pozorování |
@@ -81,7 +79,8 @@ Trigger: zimní pozorování ukáže falešné triggery v pásmu 2–4 °C.
 | ADR-005 | Execution (entity rename + device grouping): `esphome: devices:` (Globální/Provoz/Nastavení/Servisní, šablona Garage_Windows), CZ `name:` na všech exponovaných entitách, nová entita `sensor_system_state` ("Stav systému", zrcadlí WD selector: `OFF`/`IDLE`/`ARMED`/`Heater ON`). Rezervované piny (DI1/DI2/DO3/DO4) zůstávají neexponované. Draft s crosscheck tabulkou schválen Luborem po úpravách, archivováno: `#Archive/ADR-005_execution_draft.md`. **BUG-007** nalezen bench testem (log spam na `sensor_system_state`) a opraven (event-driven refresh místo 500ms interval). **Round 2 (S15):** `icon:` doplněn na všech 35 entitách; vedlejší nález — `device_class: cold` na `bs_heat_mode` zobrazoval v HA "Chladno" místo Zapnuto/Vypnuto, odebráno, nahrazeno `icon: "mdi:snowflake-alert"`. `esphome compile` čistý (`config_hash=0xb87510a3`). | S14, S15 |
 | OI5 | ESP uptime parita — `sensor: platform: uptime` (`uptime_sensor`, "Uptime (s)"), Windows OI28 precedent (ADR-005 bod 4: ESP exponuje raw sekundy, d/h/m formátování zůstává HA-side, ne firmware). Standalone, nezávislé na ADR-005 execution (entity rename) — jen nová entita v současné konvenci. "Runtime topení" část OI5 vyděleno jako **OI20** (zůstává odložený nice-to-have). `esphome compile` čistý (`config_hash=0xabae8da0`). | S13 |
 | OI17 | `_used` senzory (`t_outside_used`/`t_gas_inlet_used`/`t_chassis_used`/`t_drain_used`) měly plošný `update_interval: 5s` nezávislý na HEAT_MODE/skutečné změně zdroje. **Vyřešeno event-driven refresh přístupem:** `update_interval: never` + `on_value:` na raw senzorech (real mode) + `on_value:` na `sim_t_*` number entitách (sim mode), volající `component.update` na příslušný `_used`; `on_boot:` safety net pro sim-mode-přes-reboot edge case. Zvažován i "mirror raw polling schedule" přístup, zamítnut (stejný-tick staleness riziko, zpomalil by Simulation Mode odezvu). **Bench potvrzeno** (TEST_PLAN.md Fáze 8) — sim mode instant refresh, real mode HEAT_MODE/heater fast tiery, BUG-002/005 regrese OK. Vedlejší nález při testu: AP-001 (tvrdý HW reset a `flash_write_interval`, viz `BUGS.md`) — systémové chování, ne bug, ponecháno beze změny. | S12 |
+| — | **ADR-005+ návrh** — vyřešeno S16 → **ADR-015** (HA_RD_Jirny), formalizováno jako standardní entity-exposure formát. Výstup: `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md` (autoritativní instance v tomto repu, ADR-015 §1/§6). Draft archivován: `#Archive/ADR-005-plus_proposal_draft.md`. | S15, S16 |
 
 ---
 
-*Last updated: 2026-08-01 (S15) — ADR-005 execution + Round 2 (ikony) bench potvrzeny. Dokumentační úklid proveden (README, ROADMAP, PROJECT_VISION, structure map, ARCHITECTURE, TEST_PLAN). Nový ADR-005+ návrh čeká na Architekta. Projekt ve Fázi 4 (Field Deployment) dle `ROADMAP.md`.*
+*Last updated: 2026-08-01 (S16) — ADR-005+ vyřešeno (ADR-015, `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md`). Aktivní BACKLOG je teď 100% vázán na Field Deployment/zimní pozorování, žádná výjimka. Projekt ve Fázi 4 (Field Deployment) dle `ROADMAP.md`.*

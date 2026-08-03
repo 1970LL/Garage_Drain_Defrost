@@ -4,6 +4,22 @@
 
 ---
 
+## S17 — 2026-08-01 (Implementer/CC) — Dokumentační cleanup: reference po S16
+
+> Handoff prompt: pre-field-deployment dokumentační průchod odhalil tři
+> zapomenuté odkazy pořád mířící na předchozí stav (archivovaný draft/otevřený
+> BACKLOG řádek) místo na hotový `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md`.
+
+Opraveno: `BACKLOG.md` (ADR-005+ řádek přesunut z Aktivní do Done s odkazem na
+ADR-015, úvodní věta sekce Aktivní upravena — už žádná výjimka nezávislá na
+field/zimě), `ARCHITECTURE.md` §8 (primární odkaz přepnut z archivovaného
+draftu na živý `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md`, verze v1.18),
+`README.md` (HA Integration sekce odkazuje na entity mapu jako primární
+zdroj, archiv pryč z věty). Čistě textové opravy, žádný funkční dopad —
+validace (`grep` na staré reference) proběhla čistě.
+
+---
+
 ## S16 — 2026-08-01 (Implementer/CC) — ENTITY_EXPOSURE_HA destilace (ADR-015)
 
 > Handoff prompt od HA Architekta (repo HA_RD_Jirny, ADR-015), předaný

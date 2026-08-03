@@ -373,12 +373,18 @@ Toto jsou položky viditelné přímo z YAML — code review pravděpodobně př
 
 ---
 
-## 8. HA Entity Exposure & Device Grouping (ADR-005, S14)
+## 8. HA Entity Exposure & Device Grouping (ADR-005, S14-S16)
 
 ADR-005 execution (S14, 2026-08-01): CZ friendly names + `esphome: devices:`
 grouping, šablona `Garage_Windows` (tam Globální + per-fyzická-jednotka Okno
 1/Okno 2 — tady žádná druhá fyzická jednotka není, takže funkční rozdělení).
-Draft s crosscheck tabulkou entita-po-entitě: `#Archive/ADR-005_execution_draft.md`.
+
+**Živý zdroj pravdy pro entity-by-entity mapu (id/`device_class`/`icon`/
+grouping/dashboard Úroveň):** `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md`
+(S16, ADR-015 — standardní entity-exposure formát, autoritativní instance v
+tomto repu). Pracovní draft `#Archive/ADR-005_execution_draft.md` zůstává
+jako historický kontext rozhodování (Round 1 rename+grouping, Round 2 ikony),
+ne jako primární odkaz.
 
 **Skupiny (`esphome: devices:`):**
 
@@ -435,3 +441,4 @@ ponecháno beze změny — sémanticky sedí.
 | 1.15 | 2026-08-01 | §5: BUG-007 — `sensor_system_state` refresh mechanismus opraven z 500ms interval (log spam) na event-driven (viz BUGS.md). S14 (Implementer). |
 | 1.16 | 2026-08-01 | §8 doplněno o ADR-005 Round 2 (ikony) — všech 35 entit má `icon:`, `bs_heat_mode` ztratilo `device_class: cold` (matoucí "Chladno" stav), nahrazeno explicitní ikonou. S15 (Implementer). |
 | 1.17 | 2026-08-01 | Hlavičkové "Aktuální stav"/"Phase" opraveny ze stale "Phase 1 — Doc-sync & Code Review, ChatGPT/pre-review éra" na aktuální stav (bench-validováno, HA napárováno, Phase 4 — Field Deployment dle `ROADMAP.md` v1.2). Nalezeno při dokumentačním křížovém úklidu (S15, Implementer). |
+| 1.18 | 2026-08-01 | §8: primární odkaz na entity-by-entity mapu přepnut z archivovaného draftu na živý `ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md` (S16, ADR-015) — draft zůstává jen jako historický kontext. Nalezeno v pre-field-deployment dokumentačním průchodu (S16, Implementer). |

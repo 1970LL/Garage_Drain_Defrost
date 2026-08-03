@@ -176,7 +176,7 @@ Live — paired via ESPHome's native API integration, imported cleanly (S15/2026
 | Nastavení | User-adjustable thresholds and timers |
 | Servisní | Diagnostics — raw sensors, Simulation Mode + its manual entities, per-sensor error flags |
 
-Full entity-by-entity list, icons, and the reasoning behind the grouping: `ARCHITECTURE.md` §8, and the (archived) working draft `docs/Software_DevDoc/#Archive/ADR-005_execution_draft.md`.
+Full entity-by-entity list, icons, and dashboard grouping: `docs/Software_DevDoc/ENTITY_EXPOSURE_HA_Garage_Drain_Defrost.md` (authoritative, ADR-015). Background/rationale: `ARCHITECTURE.md` §8.
 
 ## Notes & Recommendations
 - All thresholds and heater run times are fully configurable from HA.
